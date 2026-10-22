@@ -1,0 +1,430 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index d6086b3..70fd682 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -26,6 +26,9 @@
+ extern CpuState g_cpu;
+ extern Ppu *g_ppu;
+ 
++SnesBeamLineHook *g_snes_beam_line_hook;
++void *g_snes_beam_line_ctx;
++
+ /* One NTSC field: 262 scanlines x 1364 master clocks. */
+ #define BFD_MASTER_CYCLES_PER_FIELD 357368ull
+ #define BFD_MASTER_CYCLES_PER_LINE 1364u
+@@ -256,6 +259,8 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
+     ppu_rasterApplyLine(g_ppu, line - 1);
+     if (ppu_rasterTakeHdmaen(&hdmaen))
+       dma_startDma(g_snes->dma, hdmaen, true);
++    if (g_snes_beam_line_hook)
++      g_snes_beam_line_hook(g_ppu, (unsigned)line, g_snes_beam_line_ctx);
+     ppu_runLine(g_ppu, line);
+     if (observer)
+       observer(g_ppu, (unsigned)line, context);
+@@ -269,3 +274,13 @@ void snes_beam_frame_driver_reset(void) {
+   s_resume_pc = 0;
+   s_wai_halted = false;
+ }
++
++void snes_beam_frame_driver_get_exec(uint32_t *pc, bool *wai) {
++  if (pc) *pc = s_resume_pc;
++  if (wai) *wai = s_wai_halted;
++}
++
++void snes_beam_frame_driver_set_exec(uint32_t pc, bool wai) {
++  s_resume_pc = pc;
++  s_wai_halted = wai;
++}
+diff --git a/runner/src/beam_frame_driver.h b/runner/src/beam_frame_driver.h
+index 60804fc..ec2dbc0 100644
+--- a/runner/src/beam_frame_driver.h
++++ b/runner/src/beam_frame_driver.h
+@@ -1,6 +1,9 @@
+ #ifndef SNESRECOMP_BEAM_FRAME_DRIVER_H
+ #define SNESRECOMP_BEAM_FRAME_DRIVER_H
+ 
++#include <stdbool.h>
++#include <stdint.h>
++
+ /* Beam-aligned frame driver for whole-program LLE ports.
+  *
+  * One host frame is one PPU field, cut where hardware raises NMI: the beam's
+@@ -26,7 +29,22 @@ struct Ppu;
+ typedef void SnesBeamRasterObserver(const struct Ppu *ppu, unsigned line, void *context);
+ void snes_beam_frame_driver_draw_ppu_frame_observed(
+     SnesBeamRasterObserver *observer, void *context);
++/* Optional host policy run once per visible line, after that line's raster
++ * journal and HDMA have been applied and before it is rasterized. This is
++ * where a host can inspect the scroll a scanline will actually be drawn with
++ * (a frame-model render replays the completed field, so the live register
++ * before the call can be one frame behind). It must not advance the machine;
++ * guest memory and registers must be unchanged on return. */
++typedef void SnesBeamLineHook(struct Ppu *ppu, unsigned line, void *context);
++extern SnesBeamLineHook *g_snes_beam_line_hook;
++extern void *g_snes_beam_line_ctx;
+ /* Forget the booted machine: the next frame starts from the reset vector. */
+ void snes_beam_frame_driver_reset(void);
+ 
++/* The driver's execution position is host state outside the rollback
++ * snapshot. A speculative lane that runs guest frames must carry it with the
++ * blob it saves. */
++void snes_beam_frame_driver_get_exec(uint32_t *pc, bool *wai);
++void snes_beam_frame_driver_set_exec(uint32_t pc, bool wai);
++
+ #endif /* SNESRECOMP_BEAM_FRAME_DRIVER_H */
+diff --git a/runner/src/cpu_state.c b/runner/src/cpu_state.c
+index 57fe6bc..eca209b 100644
+--- a/runner/src/cpu_state.c
++++ b/runner/src/cpu_state.c
+@@ -421,11 +421,17 @@ static uint16 cpu_latch_read16(CpuState *cpu, uint16 value) {
+     return value;
+ }
+ 
++static void read_watch_note(uint8 bank, uint16 addr, uint16 value);
++
+ uint8 cpu_read8(CpuState *cpu, uint8 bank, uint16 addr) {
+     if (g_snes && g_snes->cart)
+         cart_note_cpu_bus(g_snes->cart, bank, addr);
+     int off = cpu_wram_offset(bank, addr);
+-    if (off >= 0) return cpu_latch_read8(cpu, cpu->ram[off]);
++    if (off >= 0) {
++        uint8 value = cpu->ram[off];
++        read_watch_note(bank, addr, value);
++        return cpu_latch_read8(cpu, value);
++    }
+     if (is_hw_reg(bank, addr)) {
+         cpu_pace_cycles(addr);
+         cpu_hw_log(addr, 1, 0);
+@@ -455,6 +461,59 @@ uint8 cpu_read8(CpuState *cpu, uint8 bank, uint16 addr) {
+     return cpu_latch_read8(cpu, *RomPtr(((uint32)bank << 16) | addr));
+ }
+ 
++/* Test-only read watch for the level tables. Enabled by
++ * SNESRECOMP_READ_WATCH_FILE + optional SNESRECOMP_READ_WATCH_FRAME_MIN.
++ * Logs bank $7F 16-bit reads with frame, address, value and AOT function.
++ * This is diagnostics only and is never enabled in normal runs. */
++static int s_read_watch_state; /* 0=uninit, 1=off, 2=on */
++static FILE *s_read_watch_file;
++static int s_read_watch_frame_min;
++static int s_read_watch_frame_max = 0x7fffffff;
++static int s_read_watch_all;
++static void read_watch_note(uint8 bank, uint16 addr, uint16 value) {
++    if (s_read_watch_state == 0) {
++        const char *path = getenv("SNESRECOMP_READ_WATCH_FILE");
++        if (!path || !*path) { s_read_watch_state = 1; return; }
++        s_read_watch_file = fopen(path, "w");
++        if (!s_read_watch_file) { s_read_watch_state = 1; return; }
++        const char *lo = getenv("SNESRECOMP_READ_WATCH_FRAME_MIN");
++        const char *hi = getenv("SNESRECOMP_READ_WATCH_FRAME_MAX");
++        if (lo && *lo) s_read_watch_frame_min = atoi(lo);
++        if (hi && *hi) s_read_watch_frame_max = atoi(hi);
++        const char *all = getenv("SNESRECOMP_READ_WATCH_ALL");
++        s_read_watch_all = (all && *all && strcmp(all, "0") != 0);
++        s_read_watch_state = 2;
++    }
++    if (s_read_watch_state != 2) return;
++    if (!s_read_watch_all && bank != 0x7F) return;
++    extern int snes_frame_counter;
++    if (snes_frame_counter < s_read_watch_frame_min ||
++        snes_frame_counter > s_read_watch_frame_max) return;
++    extern const char *g_last_recomp_func;
++    extern CpuState g_cpu;
++    extern const char *g_recomp_stack[];
++    extern int g_recomp_stack_top;
++    const char *st0 = g_recomp_stack_top > 0 ? g_recomp_stack[g_recomp_stack_top - 1] : "-";
++    const char *st1 = g_recomp_stack_top > 1 ? g_recomp_stack[g_recomp_stack_top - 2] : "-";
++    const char *st2 = g_recomp_stack_top > 2 ? g_recomp_stack[g_recomp_stack_top - 3] : "-";
++    fprintf(s_read_watch_file,
++            "%d %02x:%04x %04x A=%04x X=%04x Y=%04x "
++            "PB=%02x S=%04x NMI=%d IRQ=%d VB=%d V=%u "
++            "P=%04x/%04x [%s|%s|%s] %s\n",
++            snes_frame_counter, bank, addr, value,
++            (unsigned)g_cpu.A, (unsigned)g_cpu.X, (unsigned)g_cpu.Y,
++            (unsigned)g_cpu.PB, (unsigned)g_cpu.S,
++            (g_snes && g_snes->inNmi) ? 1 : 0,
++            (g_snes && g_snes->inIrq) ? 1 : 0,
++            (g_snes && g_snes->inVblank) ? 1 : 0,
++            (unsigned)(g_snes ? g_snes->vPos : 0),
++            (unsigned)(g_cpu.ram[0x023E] | (g_cpu.ram[0x023F] << 8)),
++            (unsigned)(g_cpu.ram[0x0236] | (g_cpu.ram[0x0237] << 8)),
++            st0, st1, st2,
++            g_last_recomp_func ? g_last_recomp_func : "?");
++    fflush(s_read_watch_file);
++}
++
+ uint16 cpu_read16(CpuState *cpu, uint8 bank, uint16 addr) {
+     if (g_snes && g_snes->cart)
+         cart_note_cpu_bus(g_snes->cart, bank, addr);
+@@ -471,7 +530,9 @@ uint16 cpu_read16(CpuState *cpu, uint8 bank, uint16 addr) {
+         uint8 hi = (hi_off >= 0)
+             ? cpu->ram[hi_off]
+             : cpu_read8(cpu, bank, hi_addr);
+-        return cpu_latch_read16(cpu, (uint16)lo | ((uint16)hi << 8));
++        uint16 value = (uint16)lo | ((uint16)hi << 8);
++        read_watch_note(bank, addr, value);
++        return cpu_latch_read16(cpu, value);
+     }
+     if (is_hw_reg(bank, addr)) {
+         uint8 lo;
+diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
+index 25dcfe0..97f283c 100644
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -68,6 +68,9 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line);
+ 
+ static bool ppu_evaluateSprites(Ppu* ppu, int line);
+ static uint16_t ppu_getVramRemap(Ppu* ppu);
++PpuMarginTileHook *g_ppu_margin_tile_hook;
++void *g_ppu_margin_tile_ctx;
++
+ static void PpuUpdateWidescreenOamHistory(Ppu *ppu, int line);
+ 
+ 
+@@ -1074,6 +1077,49 @@ static bool PpuViewportAllows(Ppu *ppu, uint layer, int screen_x,
+   return layer != 0 || (screen_x >= 0 && screen_x < kPpuXPixels);
+ }
+ 
++/* Test-only BG pixel-source probe (SNESRECOMP_BGPROBE_FRAME=N[,M]).
++ * Logs, for every tile span the 4bpp renderer draws on the probed frames,
++ * the screen span, the BG coordinates and the exact VRAM map word it was
++ * fetched from. One CSV row per span; pixel sx..sx+w-1 came from map_word.
++ * SNESRECOMP_BGPROBE_LAYERS = layer bitmask (default 1 = BG1),
++ * SNESRECOMP_BGPROBE_FILE = output path (default stderr). */
++static int s_bgprobe_init, s_bgprobe_f0 = -1, s_bgprobe_f1 = -1;
++static unsigned s_bgprobe_layers = 1;
++static FILE *s_bgprobe_out;
++
++static bool PpuBgProbeActive(uint layer) {
++  if (!s_bgprobe_init) {
++    s_bgprobe_init = 1;
++    const char *e = getenv("SNESRECOMP_BGPROBE_FRAME");
++    if (e && *e) {
++      s_bgprobe_f0 = s_bgprobe_f1 = atoi(e);
++      const char *c = strchr(e, ',');
++      if (c) s_bgprobe_f1 = atoi(c + 1);
++      const char *l = getenv("SNESRECOMP_BGPROBE_LAYERS");
++      if (l && *l) s_bgprobe_layers = (unsigned)strtoul(l, NULL, 0);
++      const char *p = getenv("SNESRECOMP_BGPROBE_FILE");
++      s_bgprobe_out = (p && *p) ? fopen(p, "w") : NULL;
++      if (!s_bgprobe_out) s_bgprobe_out = stderr;
++      fprintf(s_bgprobe_out, "frame,layer,sy,sx,w,bgx,bgy,hscroll,vscroll,"
++                             "map_word,map_x,map_y,real,served\n");
++    }
++  }
++  return s_bgprobe_f0 >= 0 && (s_bgprobe_layers >> layer & 1) &&
++         snes_frame_counter >= s_bgprobe_f0 &&
++         snes_frame_counter <= s_bgprobe_f1;
++}
++
++static void PpuBgProbeSpan(const Ppu *ppu, uint layer, uint bgy, int sx,
++                           int w, int bgx, uint16_t map_word, uint16_t real,
++                           uint32 served) {
++  fprintf(s_bgprobe_out,
++          "%d,%u,%d,%d,%d,%d,%u,%u,%u,0x%04x,%u,%u,0x%04x,0x%04x\n",
++          snes_frame_counter, layer, (int)(bgy - ppu->vScroll[layer]) & 0x3ff,
++          sx, w, bgx & 0x3ff, bgy & 0x3ff, ppu->hScroll[layer],
++          ppu->vScroll[layer], map_word, map_word & 31, (map_word >> 5) & 31,
++          real, (unsigned)served & 0xffff);
++}
++
+ // Draw a whole line of a 4bpp background layer into bgBuffers
+ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+                                    uint y, bool sub, uint layer,
+@@ -1110,7 +1156,15 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+   int tileadr1 = tileadr + 7 - (y & 0x7), tileadr0 = tileadr + (y & 0x7);
+   const uint16 *addr;
+   bool ws_shadow = WsShadowLayerActive(layer);
+-#define WS_TILE(t, sx) (ws_shadow ? WsShadowTile(layer, (sx), y, (uint16_t)ppu->hScroll[layer], (uint16_t)(tp - PpuRenderVram(ppu)), (uint16_t)(t)) : (uint32)(t))
++#define WS_TILE0(t, sx) (ws_shadow ? WsShadowTile(layer, (sx), y, (uint16_t)ppu->hScroll[layer], (uint16_t)(tp - PpuRenderVram(ppu)), (uint16_t)(t)) : (uint32)(t))
++  const bool bgprobe = PpuBgProbeActive(layer);
++  uint32 probe_tile;
++#define WS_TILE(t, sx, wd) (probe_tile = WS_TILE0(t, sx), \
++  bgprobe ? PpuBgProbeSpan(ppu, layer, y, (sx), (wd), \
++      (sx) + ppu->hScroll[layer] + ws_bias[windex], \
++      (uint16_t)(tp - PpuRenderVram(ppu)), (uint16_t)(t), probe_tile) \
++          : (void)0, \
++  probe_tile)
+   for (size_t windex = 0; windex < win.nr; windex++) {
+     if (win.bits & (1 << windex))
+       continue;  // layer is disabled for this window part
+@@ -1126,7 +1180,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+     if (x & 7) {
+       int curw = IntMin(8 - (x & 7), w);
+       w -= curw;
+-      uint32 tile = WS_TILE(*tp, ws_sx);
++      uint32 tile = WS_TILE(*tp, ws_sx, curw);
+       ws_sx += curw;
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+@@ -1147,7 +1201,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+     }
+     // Handle full tiles in the middle
+     while (w >= 8) {
+-      uint32 tile = WS_TILE(*tp, ws_sx);
++      uint32 tile = WS_TILE(*tp, ws_sx, 8);
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+@@ -1166,7 +1220,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+     }
+     // Handle remaining clipped part
+     if (w) {
+-      uint32 tile = WS_TILE(*tp, ws_sx);
++      uint32 tile = WS_TILE(*tp, ws_sx, w);
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+       uint32 bits = READ_BITS(ta, tile & 0x3ff);
+@@ -1181,6 +1235,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+     }
+   }
+ #undef WS_TILE
++#undef WS_TILE0
+ #undef READ_BITS
+ #undef DO_PIXEL
+ #undef DO_PIXEL_HFLIP
+@@ -1285,6 +1340,14 @@ static void PpuDrawBackgroundBig(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y,
+     const int right = win.edges[windex + 1];
+     PpuZbufType *dstz = dstbuf->data + left + kPpuExtraLeftRight;
+     const bool ws_shadow = WsShadowLayerActive((int)layer);
++    const bool bgprobe = PpuBgProbeActive(layer);
++    int probe_x0 = left, probe_sc = -1;
++    uint16 probe_real = 0, probe_served = 0;
++#define BIG_PROBE_FLUSH(xend) \
++    if (bgprobe && probe_sc >= 0) \
++      PpuBgProbeSpan(ppu, layer, (uint)sy, probe_x0, (xend) - probe_x0, \
++                     probe_x0 + ppu->hScroll[layer], (uint16_t)probe_sc, \
++                     probe_real, probe_served)
+     for (int screen_x = left; screen_x < right; screen_x++, dstz++) {
+       const int mx = mosaic ? PpuMosaicAt(ppu, screen_x) : screen_x;
+       const int sx = mx + ppu->hScroll[layer];
+@@ -1293,6 +1356,10 @@ static void PpuDrawBackgroundBig(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y,
+         sc += 0x400;
+       sc += (sx >> 4) & 31;
+       uint16 tile = PpuRenderVram(ppu)[sc & 0x7fff];
++      if (g_ppu_margin_tile_hook && (screen_x < 0 || screen_x >= kPpuXPixels))
++        tile = g_ppu_margin_tile_hook(ppu, layer, screen_x, (int)y, tile,
++                                      (uint16)(sc & 0x7fff),
++                                      g_ppu_margin_tile_ctx);
+       unsigned px = (unsigned)sx & 15, py = (unsigned)sy & 15;
+       /* Margins: world-keyed shadow tile + matching world pixel phase.
+        * Using live hScroll/vScroll for px/py while the tile key used the
+@@ -1311,6 +1378,11 @@ static void PpuDrawBackgroundBig(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y,
+         if (wpy >= 0)
+           py = (unsigned)wpy & 15;
+       }
++      if (bgprobe && ((sc & 0x7fff) != probe_sc || tile != probe_served)) {
++        BIG_PROBE_FLUSH(screen_x);
++        probe_x0 = screen_x, probe_sc = sc & 0x7fff;
++        probe_real = PpuRenderVram(ppu)[sc & 0x7fff], probe_served = tile;
++      }
+       if (tile & 0x4000) px = 15 - px;
+       if (tile & 0x8000) py = 15 - py;
+       const unsigned character =
+@@ -1328,7 +1400,9 @@ static void PpuDrawBackgroundBig(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y,
+       if (pixel && z > *dstz)
+         *dstz = z + (PpuZbufType)pixel;
+     }
++    BIG_PROBE_FLUSH(right);
+   }
++#undef BIG_PROBE_FLUSH
+ }
+ 
+ static uint16 PpuReadTilemapEntry(Ppu *ppu, uint layer, int tx, int ty) {
+@@ -3179,6 +3253,59 @@ static struct {
+   uint8_t oamAdr, oamInHigh, oamSecondWrite, oamBuffer;
+ } s_raster_port;
+ 
++typedef struct {
++  PpuRasterField f[2];
++  int cur, armed, have_completed, rendering;
++  int render_index;
++  int next;
++  uint8_t hdmaen;
++  int hdmaen_pending;
++  struct {
++    uint8_t oamAdr, oamInHigh, oamSecondWrite, oamBuffer;
++  } port;
++} PpuRasterState;
++
++size_t ppu_rasterStateSize(void) { return sizeof(PpuRasterState); }
++
++void ppu_rasterStateSave(void *dst, size_t cap) {
++  if (!dst || cap < sizeof(PpuRasterState)) return;
++  PpuRasterState *s = (PpuRasterState *)dst;
++  memcpy(s->f, s_field, sizeof(s_field));
++  s->cur = s_raster_cur;
++  s->armed = s_raster_armed;
++  s->have_completed = s_raster_have_completed;
++  s->rendering = s_raster_rendering;
++  s->render_index = s_raster_render == &s_field[0] ? 0
++                    : s_raster_render == &s_field[1] ? 1 : -1;
++  s->next = s_raster_next;
++  s->hdmaen = s_raster_hdmaen;
++  s->hdmaen_pending = s_raster_hdmaen_pending;
++  s->port.oamAdr = s_raster_port.oamAdr;
++  s->port.oamInHigh = s_raster_port.oamInHigh;
++  s->port.oamSecondWrite = s_raster_port.oamSecondWrite;
++  s->port.oamBuffer = s_raster_port.oamBuffer;
++}
++
++bool ppu_rasterStateLoad(const void *src, size_t size) {
++  if (!src || size < sizeof(PpuRasterState)) return false;
++  const PpuRasterState *s = (const PpuRasterState *)src;
++  memcpy(s_field, s->f, sizeof(s_field));
++  s_raster_cur = s->cur;
++  s_raster_armed = s->armed;
++  s_raster_have_completed = s->have_completed;
++  s_raster_rendering = s->rendering;
++  s_raster_render = s->render_index == 0 ? &s_field[0]
++                    : s->render_index == 1 ? &s_field[1] : NULL;
++  s_raster_next = s->next;
++  s_raster_hdmaen = s->hdmaen;
++  s_raster_hdmaen_pending = s->hdmaen_pending;
++  s_raster_port.oamAdr = s->port.oamAdr;
++  s_raster_port.oamInHigh = s->port.oamInHigh;
++  s_raster_port.oamSecondWrite = s->port.oamSecondWrite;
++  s_raster_port.oamBuffer = s->port.oamBuffer;
++  return true;
++}
++
+ /* Only the machine's PPU journals: the debug server and a few tools run
+  * ppu_write on scratch copies. */
+ static Ppu *raster_machine_ppu(void) {
+diff --git a/runner/src/snes/ppu.h b/runner/src/snes/ppu.h
+index 7e092bb..5ca62cf 100644
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -619,6 +619,14 @@ void ppu_rasterReset(void);
+  * must honor this flag in its draw_ppu_frame and render the LIVE state when
+  * it is set. Default 0. */
+ extern int g_ppu_scanout_latch_bypass;
++/* Whole raster-journal state (both field buffers, cursor, render cursor and
++ * the OAM port). Host render state, outside the rollback snapshot: a
++ * speculative lane that runs guest frames must save this before it runs and
++ * restore it before the real field is drawn. The caller allocates
++ * ppu_rasterStateSize() bytes. */
++size_t ppu_rasterStateSize(void);
++void   ppu_rasterStateSave(void *dst, size_t cap);
++bool   ppu_rasterStateLoad(const void *src, size_t size);
+ int  ppu_rasterDebugDump(char *out, int cap);
+ 
+ int  ppu_rasterDebugDump(char *out, int cap);
+@@ -737,6 +745,18 @@ bool PpuSetOverlayOamRange(Ppu *ppu, uint8_t first, uint8_t count);
+ // kPpuExtraLeftRight). 0 restores authentic 256-wide rendering. The internal
+ // render width becomes 256 + 2*extra. Drives the dormant extraLeftCur/
+ // extraRightCur/extraLeftRight machinery used by the line renderer.
++/* Optional host-side substitution for tiles a wide renderer samples outside
++ * the 256-pixel viewport. Called for every margin pixel of a 16x16-tile
++ * background, after the map word is fetched and before pixels are decoded.
++ * Return the tile word to draw (the original to leave it unchanged). `sc` is
++ * the map address, `line` is the output row 1..224. Host-only presentation:
++ * must not touch guest state. */
++typedef uint16_t PpuMarginTileHook(Ppu *ppu, unsigned layer, int screen_x,
++                                  int line, uint16_t tile, uint16_t sc,
++                                  void *context);
++extern PpuMarginTileHook *g_ppu_margin_tile_hook;
++extern void *g_ppu_margin_tile_ctx;
++
+ void PpuSetExtraSpace(Ppu *ppu, uint16_t extra);
+ 
+ // Render authentic 256-wide content centered within a `budget`-per-side wider

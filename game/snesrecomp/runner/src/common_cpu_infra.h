@@ -1,0 +1,201 @@
+#pragma once
+
+#include "types.h"
+#include <stdio.h>
+
+#ifdef _MSC_VER
+#ifdef _MSC_VER
+#pragma warning(disable: 4013 4028 4033 4090 4133 4305 4715 4716)
+#endif
+#endif
+
+typedef struct Snes Snes;
+typedef struct Cpu Cpu;
+
+extern Snes *g_snes;
+extern Cpu *g_snes_cpu;
+extern bool g_fail;
+
+Snes *SnesInit(const uint8 *data, int data_size);
+uint8_t *SnesRomPtr(uint32 v);
+
+// Apply the native-mode CPU state the real ROM's reset vector would
+// have established (CLC;XCE / REP #$38 / TCD / TCS / SEI). The recomp
+// path never executes those opcodes, so RtlReset and SnesInit invoke
+// this after snes_reset to pick up where the ROM would be at $8028.
+void SnesEnterNativeMode(void);
+
+typedef void CpuInfraInitializeFunc(void);
+typedef void RunOneFrameOfGameFunc(void);
+
+typedef enum RtlEnhancedRenderResult {
+  kRtlEnhancedRender_NotHandled = 0,
+  kRtlEnhancedRender_Handled = 1,
+} RtlEnhancedRenderResult;
+
+typedef struct RtlEnhancedRendererFrame {
+  uint8 *pixels;
+  size_t pitch;
+  int width;
+  int height;
+  uint32 render_flags;
+  uint16 widescreen_extra;
+  int default_renderer_done;
+} RtlEnhancedRendererFrame;
+
+typedef RtlEnhancedRenderResult RtlEnhancedRenderFrameFunc(
+    RtlEnhancedRendererFrame *frame);
+
+void WatchdogCheck(void);
+void snes_refresh_charge(void);   /* DRAM refresh tax; see common_cpu_infra.c */
+void snes_refresh_exempt(void);   /* mark a master-clock teleport (park, load) */
+/* Rollback: the refresh tax carries a sub-scanline remainder and a high-water
+ * mark across frames, and both decide how many cycles the NEXT block is
+ * charged. A rewind that leaves them on the discarded timeline replays the
+ * same code for a different number of master cycles. See common_cpu_infra.c. */
+void snes_refresh_state_get(uint64_t *phase, uint64_t *charged_upto);
+void snes_refresh_state_set(uint64_t phase, uint64_t charged_upto);
+void WatchdogFrameStart(void);
+void RecompStackPush(const char *name);
+/* Attribution only: an interpreter run is not a compiled guest caller and
+ * cannot be selected as a SKIP_N return target. */
+void RecompStackPushInterpreter(const char *name);
+void RecompStackPop(void);
+/* Pop for an LLE yield unwind: the frame is unfinished, so no balance figure
+ * is recorded. See common_cpu_infra.c. */
+void RecompStackPopYield(void);
+/* Optional stack-balance auditor (see common_cpu_infra.c): reports stack
+ * movement beyond consumption of the caller's materialized JSR/JSL frame when
+ * SNESRECOMP_STACK_BALANCE_DIAGNOSTICS is enabled. */
+void RecompStackBalDumpStderr(int topn);
+void RecompStackBalDumpJson(FILE *f);
+/* Always-on unresolved-abandon hit table (see cpu_unresolved_abandon_balanced
+ * in cpu_state.h): one JSON object per distinct unresolved dispatch/stub/goto
+ * site that actually fired this run — the authorization worklist, ordered by
+ * first hit. Emits a trailing comma like the other dump_*_json sections. */
+void CpuUnresolvedAbandonDumpJson(FILE *f);
+/* Always-on dispatch ring (see cpu_state.c): the last DISPATCH_LOG_CAP runtime
+ * indirect dispatches (cpu_dispatch_pc_from / cpu_dispatch_call_pc). `found:0`
+ * entries ran on the interpreter tier — the AOT-promotion worklist. Trailing
+ * comma like the other dump_*_json sections. */
+void CpuDispatchLogDumpJson(FILE *f);
+/* Per-frame 65816 entry-S tracking for return-to-ancestor RTS resolution
+ * (see common_cpu_infra.c). The emitted function prologue records
+ * _entry_s into g_cpu_entry_s[g_recomp_stack_top-1]. */
+extern int g_recomp_stack_top;
+extern uint16_t g_cpu_entry_s[];
+int cpu_resolve_ancestor_skip(uint16_t ret_s);
+/* DIAGNOSTIC: dump the live recomp frame array (name, entry S, hrv per slot)
+ * to `out`, highlighting any slot whose entry S equals `mark` (0 = none). */
+void recomp_dump_frame_array(FILE *out, uint16_t mark);
+int cpu_resolve_post_return_skip(uint16_t post_s);
+typedef struct CpuTailcallContextSave {
+  uint8_t valid;
+  uint16_t entry_s;
+  uint8_t hrv;
+} CpuTailcallContextSave;
+void cpu_tailcall_inherit_return_context(uint16_t entry_s, uint8_t hrv);
+int cpu_take_tailcall_return_context(uint16_t *entry_s, uint8_t *hrv);
+void cpu_tailcall_context_save(CpuTailcallContextSave *out);
+void cpu_tailcall_context_restore(const CpuTailcallContextSave *in);
+/* Architectural interrupt handlers may cross AOT/LLE boundaries before their
+ * terminal RTI.  Keep that host-boundary context independent of any one
+ * generated function so an LLE tail can stop on RTI instead of interpreting
+ * the placeholder return PC from cpu_push_interrupt_frame(). */
+void cpu_interrupt_context_enter(void);
+void cpu_interrupt_context_leave(void);
+int cpu_interrupt_context_active(void);
+#include <setjmp.h>
+extern jmp_buf g_watchdog_jmp;
+extern int g_watchdog_tripped;
+
+struct SaveLoadInfo;
+
+typedef struct RtlGameInfo {
+  const char *title;
+  CpuInfraInitializeFunc *initialize;
+  RunOneFrameOfGameFunc *run_frame;
+  RunOneFrameOfGameFunc *draw_ppu_frame;
+  /* Optional title-owned native/enhanced presentation hook. Hosts must keep
+   * this opt-in and leave draw_ppu_frame as the default console renderer. */
+  RtlEnhancedRenderFrameFunc *enhanced_render_frame;
+  // Filename prefix used by RtlSaveLoad, e.g. "save" produces
+  // "saves/save%d.sav". If NULL, framework uses "%s_save" with title.
+  const char *save_name_prefix;
+  /* Optional save-state extension hooks — all NULL-safe (SMW/Zelda leave
+   * them unset). state_save_extra streams a game-specific chunk appended
+   * after the snes_saveload blob (format v5+); state_load_extra reads it
+   * back (only called when the file carries one). on_state_loaded fires
+   * after EVERY successful load, with the file's format version, so the
+   * game can reconcile host-side execution state that the guest snapshot
+   * cannot capture (e.g. MMX tears down and rebuilds its task fibers). */
+  void (*state_save_extra)(struct SaveLoadInfo *sli);
+  void (*state_load_extra)(struct SaveLoadInfo *sli, uint32_t version);
+  void (*on_state_loaded)(uint32_t version);
+  /* Optional soft-return rematch hook — NULL-safe. Called from
+   * snes_host_session_reset() before SnesInit on lobby rematch so
+   * process-lifetime LLE / frame gates do not survive snes_free.
+   * Per-title sticky state belongs here (not scattered in main.c). */
+  void (*session_reset)(void);
+  /* Optional console-reset hook -- NULL-safe. RtlReset (the Reset hotkey)
+   * resets the machine underneath a live session; a title that gates its boot
+   * on host-side state (a "did I_RESET run" latch, task fibers, LLE resume
+   * points) must drop that state here or it resumes its main loop against
+   * freshly reset hardware, which is a black screen. Distinct from
+   * session_reset, which also restores process-lifetime settings a reset must
+   * keep, and from the desktop host's on_reset, which fires after every state
+   * jump (loads, rewind), not only a reset. */
+  void (*hardware_reset)(void);
+  /* Developer-only promotion telemetry. When false (the default), normal
+   * release runs do not create tier2_*.json/jsonl artifacts. Developers can
+   * still opt in at launch with SNESRECOMP_TIER2_CAPTURE=1. */
+  int tier2_capture;
+  /* Zero uses the framework minimum. A title can reject formats which
+   * predate required coprocessor or execution-state data before loading. */
+  uint32_t minimum_state_version;
+
+  /* ── Rewindable execution position (rollback snapshots only) ───────────
+   *
+   * A guest snapshot holds the machine; it does not hold WHERE THE GAME IS
+   * in its own code. For a title whose frame model runs the guest on a host
+   * fiber, that position is the fiber's C call chain, and rewinding the
+   * machine without it leaves the two out of step -- the frame after the
+   * rewind resumes where the speculation left off while the RAM says
+   * otherwise. Measured on Super Metroid: 21 frames in 1,200 ended in a
+   * state they would not otherwise have been in.
+   *
+   * These hooks let such a title put that position into a ROLLBACK snapshot
+   * (in-process, in-memory, this build only -- never a file, never a wire
+   * payload; see RtlRollbackSaveToMemory). A title whose execution position
+   * already rides in the savestate chunk, or that has none to speak of,
+   * leaves them NULL.
+   *
+   * exec_state_bound is an upper bound for sizing; exec_state_save returns
+   * the bytes written, or 0 to abandon the snapshot. */
+  size_t (*exec_state_bound)(void);
+  size_t (*exec_state_save)(void *out, size_t capacity);
+  int    (*exec_state_load)(const void *in, size_t size);
+  /* Optional mode/schema identity for checksummed snapshots. A non-NULL
+   * identity requires a matching integrity envelope before any guest writes.
+   * Unmodified games retain their original RTLS output. */
+  const char *(*snapshot_guard_identity)(void);
+  /* Validate/stage title-owned payloads from the unwrapped RTLS stream before
+   * guest restoration. Must not mutate live gameplay state. False aborts load. */
+  bool (*snapshot_preflight)(const void *data, size_t size);
+  /* Optional session gate, checked by every file/memory save and load path. */
+  bool (*snapshot_allowed)(void);
+  /* Optional frame recording/playback at the complete simulation boundary.
+   * Called for every execution, including rollback and speculative frames.
+   * A recorder returns inputs unchanged; a replay can restore its checkpoint
+   * and supply recorded inputs. Rendering/IRQ work remains owned by the host
+   * and happens after frame_end. Return false to stop before executing a
+   * frame (end of playback or invalid input). NULL preserves ordinary input. */
+  bool (*frame_begin)(uint32_t *inputs);
+  void (*frame_end)(void);
+} RtlGameInfo;
+
+extern const RtlGameInfo *g_rtl_game_info;
+
+// Called by the game-layer before SnesInit so the framework knows
+// which game it's running. Framework itself names no specific game.
+void RtlRegisterGame(const RtlGameInfo *info);

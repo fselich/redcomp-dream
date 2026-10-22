@@ -1,0 +1,49 @@
+// Derived from snesrev/zelda3 src/util.h (MIT, (c) 2022 snesrev, (c) 2021
+// elzo_d) -- hence the ZELDA3_UTIL_H_ guard.
+// See THIRD_PARTY_ATTRIBUTION.md; this project's own work here is PolyForm
+// Noncommercial, the retained upstream material stays MIT.
+#ifndef ZELDA3_UTIL_H_
+#define ZELDA3_UTIL_H_
+
+#include "types.h"
+
+typedef struct SDL_Window SDL_Window;
+
+struct RendererFuncs {
+  bool (*Initialize)(SDL_Window *window);
+  void (*Destroy)();
+  void (*GetOutputSize)(int *width, int *height);
+  void (*BeginDraw)(int width, int height, uint8 **pixels, int *pitch);
+  void (*EndDraw)();
+  /* Optional. Re-apply presentation settings changed under a live window
+   * (vsync, filtering, shader) and make the presenter's context current again
+   * -- another window's GL context (the in-game launcher's) may have been
+   * current since the last frame. NULL for presenters that need neither. */
+  void (*Reconfigure)(void);
+};
+
+
+typedef struct ByteArray {
+  uint8 *data;
+  size_t size, capacity;
+} ByteArray;
+
+void ByteArray_Resize(ByteArray *arr, size_t new_size);
+void ByteArray_Destroy(ByteArray *arr);
+void ByteArray_AppendData(ByteArray *arr, const uint8 *data, size_t data_size);
+
+uint8 *ReadWholeFile(const char *name, size_t *length);
+char *NextDelim(char **s, int sep);
+char *NextLineStripComments(char **s);
+char *NextPossiblyQuotedString(char **s);
+char *SplitKeyValue(char *p);
+bool StringEqualsNoCase(const char *a, const char *b);
+const char *StringStartsWithNoCase(const char *a, const char *b);
+bool ParseBool(const char *value, bool *result);
+const char *SkipPrefix(const char *big, const char *little);
+void StrSet(char **rv, const char *s);
+char *ReplaceFilenameWithNewPath(const char *old_path, const char *new_path);
+uint8 *ApplyBps(const uint8 *src, size_t src_size_in,
+  const uint8 *bps, size_t bps_size, size_t *length_out);
+
+#endif  // ZELDA3_UTIL_H_

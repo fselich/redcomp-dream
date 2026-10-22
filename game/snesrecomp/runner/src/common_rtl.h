@@ -1,0 +1,486 @@
+// Partly derived from snesrev/smw src/common_rtl.h (MIT, (c) 2023 snesrev,
+// (c) 2021 elzo_d); the recomp runtime contract around it is this project's.
+// See THIRD_PARTY_ATTRIBUTION.md; this project's own work here is PolyForm
+// Noncommercial, the retained upstream material stays MIT.
+#pragma once
+#include <stdint.h>
+#include <stddef.h>
+#include "types.h"
+#include "snes/snes_regs.h"
+#include "debug_server.h"
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct SimpleHdma {
+  const uint8 *table;
+  const uint8 *indir_ptr;
+  uint8 rep_count;
+  uint8 mode;
+  uint8 ppu_addr;
+  uint8 indir_bank;
+} SimpleHdma;
+
+
+typedef struct Dma Dma;
+typedef struct DmaChannel DmaChannel;
+typedef struct Ppu Ppu;
+typedef struct CpuState CpuState;
+
+void SimpleHdma_Init(SimpleHdma *c, DmaChannel *dc);
+void SimpleHdma_DoLine(SimpleHdma *c);
+
+extern uint8 g_ram[0x20000];
+extern uint8 *g_sram;
+extern int g_sram_size;
+extern const uint8 *g_rom;
+extern Ppu *g_ppu;
+extern Dma *g_dma;
+extern uint8 g_snesrecomp_last_hdmaen;
+
+// Main-CPU cycle estimate for APU pacing. Incremented per RDB_BLOCK_HOOK.
+// See common_rtl.c rtl_accumulate_apu_catchup() for usage.
+extern uint64_t g_main_cpu_cycles_estimate;
+// APU-port-touch-only estimate; the only counter that feeds APU catch-up.
+// See the definition in common_rtl.c for the issue #4 rationale.
+extern uint64_t g_apu_pace_cycles_estimate;
+extern uint64_t g_apu_last_sync_cycles;
+// Axis-5 off-cue: master-clock APU pacing (see common_rtl.c). The live $420D
+// FastROM bit (g_memsel) is declared in cpu_state.h so generated blocks can see
+// it; it's defined alongside the pacing state in common_rtl.c.
+extern uint64_t g_apu_last_sync_master;
+/* True while RtlRunFrame's absolute guest-frame clock owns SPC progression.
+ * Interpreter fallback must not also add its legacy relative catch-up for the
+ * same elapsed master cycles. */
+bool rtl_apu_frame_timeline_active(void);
+/* Opt in before the first RtlRunFrame when the host can pace extended guest
+ * iterations. It MUST advance its simulation deadline by RtlLastFramePeriods
+ * nominal frame periods after each call, including non-interactive loading.
+ * Audio stays on one carried guest clock across multi-frame work. Existing
+ * hosts retain their timing until they adopt this contract. */
+void RtlEnableExtendedFrameTiming(void);
+double RtlLastFramePeriods(void);
+bool rtl_apu_extended_frame_timing(void);
+void rtl_apu_snapshot_pacing(uint64_t *frame_start_master, uint8_t *frame_time_valid);
+void rtl_apu_restore_pacing(uint64_t frame_start_master, uint8_t frame_time_valid);
+void rtl_accumulate_apu_catchup(void);
+/* Caller holds RtlApuLock. Before the first frame, retain bootstrap synthetic
+ * pacing; afterward synchronize reads to the authoritative guest timestamp. */
+void rtl_sync_apu_to_cpu_locked(void);
+/* AOT APU pacing: called per-block from WatchdogCheck (generated code) so long
+ * AOT runs flush the SPC every ~1024 master cycles like the interp bridge. */
+void rtl_apu_pace_check(void);
+
+#ifdef SNES_COSIM
+// Co-sim shared APU clock (SNES_COSIM_APU_SHARED=1, dev-only): pace the SPC
+// purely from the HW-touch synthetic estimate on BOTH sides of a same-binary
+// A/B pair. The touch sequence is the only clock the compiled and interpreted
+// execution models advance identically (same guest instructions => same HW
+// touches until a true divergence), so under it the whole APU/DSP/SPC state
+// becomes a pure function of shared history and stops false-diverging.
+// Disables: the interp tier's per-opcode SPC advance, and the wall-clock
+// baseline in rtl_accumulate_apu_catchup (both are per-side clocks —
+// master_cycles accumulates differently per execution model).
+int cosim_apu_shared_clock(void);
+#endif
+
+// Axis-7 determinism per-frame WRAM fingerprint ring (common_rtl.c).
+#define FP_RING 8192
+extern uint64_t g_fp_ring[FP_RING];
+extern uint64_t g_fp_max_frame;
+
+#define GET_BYTE(p) (*(uint8*)(p))
+
+extern int snes_frame_counter;
+
+#include "spc_player.h"
+
+void MemCpy(void *dst, const void *src, int size);
+bool Unreachable();
+
+// Forward declaration: RomPtr must be declared before any inline that calls it
+// (e.g. RomFixedPtr in the _DEBUG block below).  Without this, MSVC in C11
+// mode implicitly declares it as int RomPtr(), which then clashes with the
+// real prototype below (C2040 error).
+uint8 *RomPtr(uint32_t addr);
+
+#if defined(_DEBUG)
+// Gives better warning messages but non inlined on tcc
+static inline uint16 GET_WORD(const uint8 *p) { return *(uint16 *)(p); }
+static inline const uint8 *RomFixedPtr(uint32_t addr) { return RomPtr(addr); }
+#else
+#define GET_WORD(p) (*(uint16*)(p))
+#define RomFixedPtr(addr) RomPtr(addr)
+#endif
+
+#define GET_BYTE(p) (*(uint8*)(p))
+#define SET_WORD(p, v) (*(uint16*)(p) = (uint16)(v))
+
+// Construct a LongPtr from a 16-bit lo word and 8-bit bank byte.
+// Used by the DP aliasing fix: local pointer variables replace g_ram reads.
+static inline LongPtr MAKE_LONG(uint16 lo, uint8 bank) {
+  LongPtr lp;
+  *(uint16 *)&lp = lo;
+  ((uint8 *)&lp)[2] = bank;
+  return lp;
+}
+
+static inline uint8 *RomPtr_RAM(uint16_t addr) { assert(addr < 0x2000); return g_ram + addr; }
+static inline const uint8 *RomPtr_00(uint16_t addr) { return RomPtr(0x000000 | addr); }
+static inline const uint8 *RomPtr_01(uint16_t addr) { return RomPtr(0x010000 | addr); }
+static inline const uint8 *RomPtr_02(uint16_t addr) { return RomPtr(0x020000 | addr); }
+static inline const uint8 *RomPtr_03(uint16_t addr) { return RomPtr(0x030000 | addr); }
+static inline const uint8 *RomPtr_04(uint16_t addr) { return RomPtr(0x040000 | addr); }
+static inline const uint8 *RomPtr_05(uint16_t addr) { return RomPtr(0x050000 | addr); }
+static inline const uint8 *RomPtr_06(uint16_t addr) { return RomPtr(0x060000 | addr); }
+static inline const uint8 *RomPtr_07(uint16_t addr) { return RomPtr(0x070000 | addr); }
+static inline const uint8 *RomPtr_08(uint16_t addr) { return RomPtr(0x080000 | addr); }
+static inline const uint8 *RomPtr_09(uint16_t addr) { return RomPtr(0x090000 | addr); }
+static inline const uint8 *RomPtr_0A(uint16_t addr) { return RomPtr(0x0a0000 | addr); }
+static inline const uint8 *RomPtr_0B(uint16_t addr) { return RomPtr(0x0b0000 | addr); }
+static inline const uint8 *RomPtr_0C(uint16_t addr) { return RomPtr(0x0c0000 | addr); }
+static inline const uint8 *RomPtr_0D(uint16_t addr) { return RomPtr(0x0d0000 | addr); }
+static inline const uint8 *RomPtr_0E(uint16_t addr) { return RomPtr(0x0e0000 | addr); }
+static inline const uint8 *RomPtr_0F(uint16_t addr) { return RomPtr(0x0f0000 | addr); }
+static inline const uint8 *RomPtr_11(uint16_t addr) { return RomPtr(0x110000 | addr); }
+static inline const uint8 *RomPtr_12(uint16_t addr) { return RomPtr(0x120000 | addr); }
+// Extended ROM banks (used in data banks and bank mirrors)
+static inline const uint8 *RomPtr_18(uint16_t addr) { return RomPtr(0x180000 | addr); }
+static inline const uint8 *RomPtr_1D(uint16_t addr) { return RomPtr(0x1d0000 | addr); }
+static inline const uint8 *RomPtr_20(uint16_t addr) { return RomPtr(0x200000 | addr); }
+static inline const uint8 *RomPtr_28(uint16_t addr) { return RomPtr(0x280000 | addr); }
+static inline const uint8 *RomPtr_37(uint16_t addr) { return RomPtr(0x370000 | addr); }
+static inline const uint8 *RomPtr_38(uint16_t addr) { return RomPtr(0x380000 | addr); }
+static inline const uint8 *RomPtr_39(uint16_t addr) { return RomPtr(0x390000 | addr); }
+static inline const uint8 *RomPtr_40(uint16_t addr) { return RomPtr(0x400000 | addr); }
+static inline const uint8 *RomPtr_42(uint16_t addr) { return RomPtr(0x420000 | addr); }
+static inline const uint8 *RomPtr_44(uint16_t addr) { return RomPtr(0x440000 | addr); }
+static inline const uint8 *RomPtr_48(uint16_t addr) { return RomPtr(0x480000 | addr); }
+static inline const uint8 *RomPtr_4B(uint16_t addr) { return RomPtr(0x4b0000 | addr); }
+static inline const uint8 *RomPtr_66(uint16_t addr) { return RomPtr(0x660000 | addr); }
+static inline const uint8 *RomPtr_6B(uint16_t addr) { return RomPtr(0x6b0000 | addr); }
+static inline const uint8 *RomPtr_6D(uint16_t addr) { return RomPtr(0x6d0000 | addr); }
+static inline const uint8 *RomPtr_7B(uint16_t addr) { return RomPtr(0x7b0000 | addr); }
+// High bank mirrors ($80+) and upper data banks
+static inline const uint8 *RomPtr_82(uint16_t addr) { return RomPtr(0x820000 | addr); }
+static inline const uint8 *RomPtr_87(uint16_t addr) { return RomPtr(0x870000 | addr); }
+static inline const uint8 *RomPtr_89(uint16_t addr) { return RomPtr(0x890000 | addr); }
+static inline const uint8 *RomPtr_8A(uint16_t addr) { return RomPtr(0x8a0000 | addr); }
+static inline const uint8 *RomPtr_8C(uint16_t addr) { return RomPtr(0x8c0000 | addr); }
+static inline const uint8 *RomPtr_90(uint16_t addr) { return RomPtr(0x900000 | addr); }
+static inline const uint8 *RomPtr_94(uint16_t addr) { return RomPtr(0x940000 | addr); }
+static inline const uint8 *RomPtr_A0(uint16_t addr) { return RomPtr(0xa00000 | addr); }
+static inline const uint8 *RomPtr_A8(uint16_t addr) { return RomPtr(0xa80000 | addr); }
+static inline const uint8 *RomPtr_AE(uint16_t addr) { return RomPtr(0xae0000 | addr); }
+static inline const uint8 *RomPtr_B7(uint16_t addr) { return RomPtr(0xb70000 | addr); }
+static inline const uint8 *RomPtr_C9(uint16_t addr) { return RomPtr(0xc90000 | addr); }
+static inline const uint8 *RomPtr_D6(uint16_t addr) { return RomPtr(0xd60000 | addr); }
+static inline const uint8 *RomPtr_F8(uint16_t addr) { return RomPtr(0xf80000 | addr); }
+static inline const uint8 *RomPtrWithBank(uint8 bank, uint16_t addr) { return RomPtr((bank << 16) | addr); }
+// WRAM banks — $7E:xxxx → g_ram[addr], $7F:xxxx → g_ram[0x10000 + addr]
+static inline uint8 *RomPtr_7E(uint16_t addr) { return g_ram + addr; }
+static inline uint8 *RomPtr_7F(uint16_t addr) { return g_ram + 0x10000 + addr; }
+static inline const uint8 *RomPtr_10(uint16_t addr) { return RomPtr(0x100000 | addr); }
+static inline const uint8 *RomPtr_17(uint16_t addr) { return RomPtr(0x170000 | addr); }
+static inline const uint8 *RomPtr_1B(uint16_t addr) { return RomPtr(0x1b0000 | addr); }
+static inline const uint8 *RomPtr_1C(uint16_t addr) { return RomPtr(0x1c0000 | addr); }
+static inline const uint8 *RomPtr_80(uint16_t addr) { return RomPtr(0x800000 | addr); }
+
+void WriteReg(uint16 reg, uint8 value);
+void WriteRegWord(uint16 reg, uint16 value);
+uint16 ReadRegWord(uint16 reg);
+uint8 ReadReg(uint16 reg);
+uint8 ReadRegOpenBus(uint16 reg, uint8 open_bus);
+uint8_t *IndirPtr_Slow(LongPtr ptr, uint16 offs);
+
+// 16-bit-indirect-via-DP resolution. The addressing modes `(dp)`,
+// `(dp),Y`, `(dp,X)` and `(dp,S),Y` all fetch a 2-byte pointer from
+// DP and combine it with the data bank register (DB) to form the
+// full 24-bit effective address. Use this instead of raw
+// `g_ram[ptr_lo | ptr_hi<<8]` — that silently assumes DB=\$7E and
+// returns garbage when DB is a ROM bank (typical for in-ROM
+// data-table loads).
+uint8_t *IndirPtrDB(uint8 dp_addr, uint16 offs);
+static inline uint8_t *IndirPtr(LongPtr ptr, uint16 offs) {
+  uint32 a = (*(uint32 *)&ptr & 0xffffff) + offs;
+  uint8 bank = (uint8)(a >> 16);
+  if (bank >= 0x7e && bank <= 0x7f)
+    return &g_ram[a & 0x1ffff];
+  if ((a & 0xffff) < 0x2000)
+    return &g_ram[a & 0x1ffff];
+  return RomPtr(a);
+}
+static inline void IndirWriteByte(LongPtr ptr, uint16 offs, uint8 value) {
+  uint8_t *dst = IndirPtr(ptr, offs);
+#if SNESRECOMP_REVERSE_DEBUG
+  // Only fire the WRAM hook if the write actually landed in WRAM.
+  // dst may point into ROM for in-ROM data-table writes (a NOP in practice
+  // since ROM is read-only, but the ptr math still lands there).
+  // Read old BEFORE the store so the Tier-1 log can emit old/new.
+  if (dst >= g_ram && dst < g_ram + 0x20000) {
+    uint8_t old_val = dst[0];
+    dst[0] = value;
+    debug_on_wram_write_byte((uint32_t)(dst - g_ram), old_val, value);
+  } else {
+    dst[0] = value;
+  }
+#else
+  dst[0] = value;
+#endif
+}
+
+// 16-bit word store through a 24-bit DP pointer. Native counterpart of
+// `STA [dp]` / `STA [dp],Y` emitted when M=0 (A-16). Writes the low byte
+// at the effective address and the high byte one byte later; the pair is
+// always contiguous in the target region (WRAM or ROM-mirror).
+static inline void IndirWriteWord(LongPtr ptr, uint16 offs, uint16 value) {
+  uint8_t *dst = IndirPtr(ptr, offs);
+#if SNESRECOMP_REVERSE_DEBUG
+  if (dst >= g_ram && dst < g_ram + 0x20000) {
+    uint16_t old_val = (uint16_t)dst[0] | ((uint16_t)dst[1] << 8);
+    dst[0] = (uint8_t)value;
+    dst[1] = (uint8_t)(value >> 8);
+    debug_on_wram_write_word((uint32_t)(dst - g_ram), old_val, value);
+  } else {
+    dst[0] = (uint8_t)value;
+    dst[1] = (uint8_t)(value >> 8);
+  }
+#else
+  dst[0] = (uint8_t)value;
+  dst[1] = (uint8_t)(value >> 8);
+#endif
+}
+
+// Tier-1 wrappers for the direct IndirPtrDB([0] = val) pattern the generator
+// emits for STA (dp),Y / STA (dp,X) / STA (dp). Equivalent to the raw
+// pattern when SNESRECOMP_REVERSE_DEBUG=0; adds the hook when =1.
+#if SNESRECOMP_REVERSE_DEBUG
+static inline void rdb_indir_dbx_store8(uint8 dp_addr, uint16 offs, uint8 value) {
+  uint8_t *dst = IndirPtrDB(dp_addr, offs);
+  if (dst >= g_ram && dst < g_ram + 0x20000) {
+    uint8_t old_val = dst[0];
+    dst[0] = value;
+    debug_on_wram_write_byte((uint32_t)(dst - g_ram), old_val, value);
+  } else {
+    dst[0] = value;
+  }
+}
+static inline void rdb_indir_dbx_store16(uint8 dp_addr, uint16 offs, uint16 value) {
+  uint8_t *dst = IndirPtrDB(dp_addr, offs);
+  if (dst >= g_ram && dst < g_ram + 0x20000) {
+    uint16_t old_val = *(uint16_t *)dst;
+    *(uint16_t *)dst = value;
+    debug_on_wram_write_word((uint32_t)(dst - g_ram), old_val, value);
+  } else {
+    *(uint16_t *)dst = value;
+  }
+}
+#endif
+
+/* Clear the host-side pacing that drives the guest: frame counter and APU
+ * anchors. Called by RtlReset and by SnesInit, so a soft reset and a cold boot
+ * agree on what a fresh machine means. */
+void rtl_reset_host_pacing(void);
+void RtlReset(int mode);
+
+enum {
+  kSaveLoad_Save = 1,
+  kSaveLoad_Load = 2,
+};
+
+void RtlSaveLoad(int cmd, int slot);
+void RtlApuLock();
+void RtlApuUnlock();
+void RtlRenderAudio(int16 *audio_buffer, int samples, int channels);
+/* Report the rate the host actually opened the audio device at, so the consumer
+ * can convert the SPC's native 32040 Hz onto it. MUST be called from host audio
+ * init (before the device is unpaused) by any host whose rate is configurable —
+ * omitting it silently assumes 32040 and consumes far too fast at any other
+ * rate. Ignored for values outside 8000-192000. */
+void RtlSetAudioOutputRate(int freq);
+/* Notify the shared audio runner of host fast-forward state. Guest-frame SPC
+ * synchronization is automatic inside RtlRunFrame; clients only supply the
+ * presentation policy needed to discard stale PCM after fast-forward. */
+void RtlAudioSetFastForward(bool active);
+/* Reset the netplay frame-locked SPC sample accumulator (call on session start). */
+void RtlNetplayAudioReset(void);
+bool RtlUploadSpcImageFromDp(CpuState *cpu);
+bool RtlUploadSpcImageFromDpLive(CpuState *cpu);
+bool RtlRunFrame(uint32 inputs);
+void RtlReadSram();
+/* Returns 1 when the battery file was durably replaced, 0 on any failure
+ * (the previous file is left in place). */
+int RtlWriteSram(void);
+int RtlTryWriteSram(void);
+/* Save-directory root for SRAM + savestate slots. Default "saves". Netplay
+ * guests use "saves/netplay" so host-driven sync cannot clobber personal files.
+ * Pass NULL/"" to restore the default. */
+void RtlSetSaveRoot(const char *root);
+const char *RtlSaveRoot(void);
+/* Optional stable directory for the Quick slot when a host switches SRAM
+ * namespaces (e.g. course packs). NULL/"" follows the current save root.
+ * Numbered slots and battery saves retain their existing paths. */
+void RtlSetQuickSaveRoot(const char *root);
+/* Current RTLS guest prefix, including its header but excluding title extras.
+ * For opt-in preflight of states written by this exact guest schema. */
+size_t RtlSnapshotGuestSize(uint32 *version_out);
+void RtlEnsureSaveDir(void);
+void RtlSaveSlotPath(int slot, char *buf, size_t buflen);
+void RtlSramFilePath(char *buf, size_t buflen);
+// Copy a legacy saves/<legacy_title>.srm forward to the generic saves/save.srm
+// (idempotent). Call before the launcher so its SAVES panel reflects the carried-
+// forward save; RtlReadSram also calls it on boot as a fallback.
+void RtlMigrateLegacySram(const char *legacy_title);
+bool RtlSaveSnapshot(const char *filename);
+bool RtlLoadSnapshot(const char *filename);
+/* Opt-in native execution extension for title state callbacks. Save/load in
+ * state_*_extra; apply in on_state_loaded, after generic post-load cleanup.
+ * Version/size checked, pointer-free; intended for matching runtime builds. */
+struct SaveLoadInfo;
+void RtlSaveExecutionState(struct SaveLoadInfo *sli);
+bool RtlLoadExecutionState(struct SaveLoadInfo *sli);
+/* Unread bytes in a snapshot stream, or SIZE_MAX for an unknown stream.
+ * Lets game chunks distinguish historical layouts without probing past EOF. */
+size_t RtlStateBytesRemaining(struct SaveLoadInfo *sli);
+/* Propagate failure from a title extension (including allocation failure) to
+ * the caller, so an incomplete snapshot is never reported as saved/loaded. */
+void RtlStateStreamFail(struct SaveLoadInfo *sli);
+void RtlApplyExecutionState(void);
+/* Host timeline invalidation after a successful load or reset. */
+uint64_t RtlStateGeneration(void);
+size_t RtlSaveSnapshotToMemory(void *data, size_t capacity);
+bool RtlLoadSnapshotFromMemory(const void *data, size_t size);
+/* True only while a rollback restore invokes the game's load callbacks.
+ * Preserve presentation cue acknowledgements in this context; an ordinary
+ * save-state load still ends the old presentation timeline. */
+bool RtlIsRollbackLoad(void);
+
+/*
+ * Rollback snapshots (netplay ROLLBACK mode).
+ *
+ * Same guest blob as RtlSaveSnapshotToMemory plus a "sim residue" chunk: the
+ * host-side state that participates in deterministic simulation but that an
+ * ordinary savestate deliberately leaves out because a one-off load can just
+ * re-anchor it. Rollback cannot re-anchor — it rewinds tens of times a second,
+ * and any clock that does not rewind with the guest drifts the two peers apart:
+ *
+ *   - g_cpu (the recompiled CPU state, master_cycles above all). RtlLoadSnapshot
+ *     re-anchors beamMasterLast to the *current* master_cycles precisely because
+ *     that clock does not rewind.
+ *   - the APU catch-up accumulators and frame-timeline anchors.
+ *   - the CPU->APU port-write scheduler (see ApuPortSched in snes/apu.h).
+ *
+ * The load side subtracts one thing instead of adding it: the S-DSP output ring
+ * is left where the live audio thread has it, because that consumer is host
+ * state and does not rewind. See DspOutputRing in snes/dsp.h.
+ *
+ * These blobs are in-process and in-memory only — never a file, never a wire
+ * payload. They are not RTLS savestates and carry no version compatibility
+ * promise across builds.
+ */
+size_t RtlRollbackSaveToMemory(void *data, size_t capacity);
+bool RtlRollbackLoadFromMemory(const void *data, size_t size);
+/* Netplay: snapshots two peers in the same guest state write byte-for-byte
+ * alike (the live audio output ring is blanked while writing). The memory
+ * form is the rollback format -- load it with RtlRollbackLoadFromMemory,
+ * which carries the timing residue and keeps the receiver's live ring. */
+size_t RtlNetplaySnapshotToMemory(void *data, size_t capacity);
+/* How much of such a snapshot two peers in one state agree on: all but the
+ * trailing residue, whose absolute cycle counters are host bookkeeping. */
+size_t RtlNetplaySnapshotHashedBytes(size_t size);
+bool RtlSaveSnapshotRingBlanked(const char *filename);
+/* Upper bound for one rollback snapshot; sizes the ring's allocations. */
+size_t RtlRollbackSnapshotBound(void);
+
+/* Read / rewind the DSP output-ring producer cursor, so a resim can discard
+ * the audio it re-produced for ticks the player has already heard. */
+/*
+ * Speculative frames: frames the guest runs that the player will never see,
+ * because the caller is about to rewind them (run-ahead; netplay resim could
+ * use this too).
+ *
+ * While set, RtlRunFrame does not fire the per-frame mod hook. A mod counting
+ * frames -- the performance log above all -- must count what reached the
+ * screen, not what was speculated and thrown away. Everything else about the
+ * frame is unchanged, so determinism is untouched.
+ *
+ * The frame COUNTER is deliberately not gated here: leaving it to advance
+ * keeps RtlRunFrame byte-identical between real and speculative frames, and
+ * the caller restores it after rewinding.
+ */
+void RtlSetSpeculativeFrame(bool on);
+bool RtlSpeculativeFrame(void);
+
+uint32_t RtlAudioProducerCursor(void);
+void RtlAudioRewindProducer(uint32_t cursor);
+
+/*
+ * Multiplayer seats (Super Multitap).
+ *
+ * RtlRunFrame's packed word owns seats 0 and 1 and is unchanged. Seats 2..7
+ * are additive: a game that wants more than two players calls RtlSetPadState
+ * for those seats before RtlRunFrame, exactly the way psxrecomp's
+ * sio_set_pad_state_slot works, so no existing port has to change its frame
+ * loop to keep working.
+ *
+ * Seat numbering follows the port configuration (runner/src/snes/joypad.h):
+ *
+ *   no tap          seats 0..1
+ *   tap on port 1   tap = seats 0..3, port 2 pad = seat 4
+ *   tap on port 2   port 1 pad = seat 0, tap = seats 1..4   (5-player)
+ *   taps on both    port 1 tap = seats 0..3, port 2 tap = seats 4..7
+ *
+ * A seat marked disconnected reports 0 on the multitap's 17th bit, which is
+ * how a game tells an empty tap slot from a controller holding nothing.
+ *
+ * Multitap is off by default; enable it per game with RtlSetMultitap, or at
+ * launch with SNES_MULTITAP=port1|port2|both (off/none also accepted).
+ */
+#define RTL_MAX_PLAYERS 8
+
+void RtlSetPadState(int slot, uint16 buttons);
+uint16 RtlGetPadState(int slot);
+void RtlSetPadConnected(int slot, int connected);
+int  RtlGetPadConnected(int slot);
+/* port: 0 = console port 1, 1 = console port 2. */
+void RtlSetMultitap(int port, int enabled);
+int  RtlGetMultitap(int port);
+/* Seats reachable in the current configuration: 2, 5, or 8. */
+int  RtlPlayerCount(void);
+
+void RtlApuWrite(uint16 adr, uint8 val);
+
+/* APU port write observers: called for every guest write to $2140-$217F
+ * before the SPC sees it; return nonzero to consume the write. Observers run
+ * in registration order; any consumer wins. */
+typedef int (*RtlApuPortObserver)(uint16 reg, uint8 value);
+#define RTL_APU_PORT_OBSERVER_MAX 8
+int RtlAddApuPortObserver(RtlApuPortObserver observer);
+void RtlRemoveApuPortObserver(RtlApuPortObserver observer);
+int rtl_apu_port_observers_filter(uint16 reg, uint8 value);
+/* Optional host acknowledgement of consumed requests. The original SPC value
+ * is provided after time synchronization; return nonzero after replacing it. */
+typedef int (*RtlApuPortReadObserver)(uint16 reg, uint8 *value);
+int RtlAddApuPortReadObserver(RtlApuPortReadObserver observer);
+void RtlRemoveApuPortReadObserver(RtlApuPortReadObserver observer);
+uint8 rtl_apu_port_observers_read(uint16 reg, uint8 value);
+
+
+enum {
+  kJoypadL_A = 0x80,
+  kJoypadL_X = 0x40,
+  kJoypadL_L = 0x20,
+  kJoypadL_R = 0x10,
+
+  kJoypadH_B = 0x80,
+  kJoypadH_Y = 0x40,
+  kJoypadH_Select = 0x20,
+  kJoypadH_Start = 0x10,
+
+  kJoypadH_Up = 0x8,
+  kJoypadH_Down = 0x4,
+  kJoypadH_Left = 0x2,
+  kJoypadH_Right = 0x1,
+
+  kJoypadH_AnyDir = 0xf,
+};

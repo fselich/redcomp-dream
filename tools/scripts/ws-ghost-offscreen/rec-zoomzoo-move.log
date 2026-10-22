@@ -1,0 +1,8 @@
+pos 1741 {'ok': True, 'addr': '0x00411', 'len': 20, 'from': 1400, 'to': 3500, 'entries': [{'f': 1400, 'hex': '004c004c004c004c004c003c3c3d3c363c373c4c'}, {'f': 1403, 'hex': '00000000000000000000000000000000000
+zoom 3 {'ok': True, 'addr': '0x003ed', 'len': 2, 'from': 1400, 'to': 3500, 'entries': [{'f': 1400, 'hex': '3ce0'}, {'f': 1403, 'hex': '0000'}, {'f': 1502, 'hex': '0200'}], 'emitted': 3, 'considered': 2101, '
+mask 3 {'ok': True, 'addr': '0x00d49', 'len': 2, 'from': 1400, 'to': 3500, 'entries': [{'f': 1400, 'hex': '0001'}, {'f': 1402, 'hex': '0000'}, {'f': 1502, 'hex': 'ff3f'}], 'emitted': 3, 'considered': 2101, '
+oam 1638 {'ok': True, 'addr': '0x01501', 'len': 16, 'from': 1400, 'to': 3500, 'entries': [{'f': 1400, 'hex': '00000000000000000000000000000000'}, {'f': 1502, 'hex': '6520882860600026e0e0002660208828'}, {'f': 1
+hi 7 {'ok': True, 'addr': '0x01599', 'len': 1, 'from': 1400, 'to': 3500, 'entries': [{'f': 1400, 'hex': '00'}, {'f': 1502, 'hex': 'a5'}, {'f': 1605, 'hex': 'f5'}, {'f': 1607, 'hex': 'a5'}, {'f': 1813, 'hex
+ddb 1 {'ok': True, 'addr': '0x00ddb', 'len': 1, 'from': 1400, 'to': 3500, 'entries': [{'f': 1400, 'hex': '00'}], 'emitted': 1, 'considered': 2101, 'truncated': False}
+c67 3 {'ok': True, 'addr': '0x00c67', 'len': 2, 'from': 1400, 'to': 3500, 'entries': [{'f': 1400, 'hex': '007d'}, {'f': 1402, 'hex': '0000'}, {'f': 1509, 'hex': '0100'}], 'emitted': 3, 'considered': 2101, '
+ba1 9 {'ok': True, 'addr': '0x00ba1', 'len': 4, 'from': 1400, 'to': 3500, 'entries': [{'f': 1400, 'hex': '01881101'}, {'f': 1402, 'hex': '00000000'}, {'f': 1796, 'hex': '01000000'}, {'f': 2038, 'hex': '0100

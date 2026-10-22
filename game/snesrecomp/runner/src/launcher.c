@@ -1,0 +1,214 @@
+/*
+ * launcher.c - ROM discovery, verification, and cached path selection.
+ *
+ * Executable-relative paths, cache persistence, native picking, and ROM image
+ * verification live in focused modules. This file owns only the shared
+ * resolution policy used by the public entry points.
+ */
+#include "launcher.h"
+#include "host_paths.h"
+#include "launcher_cache.h"
+#include "launcher_picker.h"
+#include "rom_image_verify.h"
+
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+#endif
+
+/* ---- Shared resolution policy ---- */
+
+typedef int (*RomCandidateValidator)(const char *path, int positional,
+                                     const void *context);
+
+/* Index of the first non-flag argument, or 0 when there is none.
+ *
+ * Scans rather than reading argv[1], because the ROM is not always first.
+ * The hosts in this ecosystem take their flags BEFORE the positional ROM
+ * (`<exe> --launcher <rom>`) -- mmx23_host_main.inc accepts --launcher only as
+ * argv[1], and MetalWarriors stops parsing flags at the first non-flag. A
+ * caller that put the ROM first to satisfy this resolver therefore hid
+ * --launcher from the host, and every SNES title booted straight past its
+ * launcher. Accepting either order is what lets one argv satisfy both. */
+static int first_positional_arg(int argc, char **argv) {
+    if (!argv) return 0;
+    for (int i = 1; i < argc; ++i) {
+        if (!argv[i] || argv[i][0] == '\0') continue;
+        if (argv[i][0] == '-') continue;   /* a flag, not the ROM */
+        return i;
+    }
+    return 0;
+}
+
+static void copy_path_fallback(const char *path,
+                               char *out_path, size_t max_len) {
+    strncpy(out_path, path, max_len - 1);
+    out_path[max_len - 1] = '\0';
+}
+
+static int resolve_rom_common(int argc, char **argv,
+                              char *out_path, size_t max_len,
+                              RomCandidateValidator validate,
+                              const void *context) {
+    if (!out_path || max_len == 0) return 0;
+    out_path[0] = '\0';
+
+    const int pos = first_positional_arg(argc, argv);
+    if (pos) {
+        if (!snesrecomp_abspath(argv[pos], out_path, max_len))
+            copy_path_fallback(argv[pos], out_path, max_len);
+        /* Positional validators preserve the historical warning-and-continue
+         * behavior for explicit command-line overrides. */
+        if (!validate(out_path, 1, context)) return 0;
+        snesrecomp_rom_cache_write(out_path);
+        printf("[Launcher] ROM: %s\n", out_path);
+        return 1;
+    }
+
+    snesrecomp_rom_cache_read(out_path, max_len);
+    for (;;) {
+        if (out_path[0] == '\0') {
+            if (!snesrecomp_pick_rom_file(out_path, max_len)) {
+                fprintf(stderr, "[Launcher] No ROM selected - exiting.\n");
+                out_path[0] = '\0';
+                return 0;
+            }
+        }
+        if (validate(out_path, 0, context)) {
+            snesrecomp_rom_cache_write(out_path);
+            printf("[Launcher] ROM: %s\n", out_path);
+            return 1;
+        }
+        out_path[0] = '\0';
+    }
+}
+
+typedef struct CrcPolicy {
+    uint32_t expected;
+} CrcPolicy;
+
+static int validate_crc(const char *path, int positional,
+                        const void *context) {
+    const CrcPolicy *policy = (const CrcPolicy *)context;
+    if (snesrecomp_rom_verify_crc32(path, policy->expected)) return 1;
+    if (!positional) return 0;
+    fprintf(stderr,
+            "[Launcher] Warning: CRC mismatch for '%s' - continuing anyway\n",
+            path);
+    return 1;
+}
+
+static const char *verdict_title(SnesRomVerdict verdict) {
+    switch (verdict) {
+    case kSnesRom_Wrong:      return "Wrong ROM";
+    case kSnesRom_Unknown:    return "ROM not recognized";
+    case kSnesRom_Archive:    return "Archive, not a ROM";
+    case kSnesRom_Unreadable: return "ROM unreadable";
+    case kSnesRom_Ok:         break;
+    }
+    return "ROM verified";
+}
+
+static int validate_identity(const char *path, int positional,
+                             const void *context) {
+    const SnesRomIdentityPolicy *policy = (const SnesRomIdentityPolicy *)context;
+    char why[1536];
+    SnesRomFacts facts;
+    const SnesRomVerdict verdict = snes_rom_identity_check_file(
+        path, policy->catalog, policy->catalog_count,
+        policy->required_sha256_hex,
+        policy->subject && policy->subject[0] ? policy->subject : "This game",
+        policy->help, &facts, why, sizeof(why));
+    if (verdict == kSnesRom_Ok) return 1;
+    fprintf(stderr, "[Launcher] %s: '%s'\n[Launcher] %s\n",
+            verdict_title(verdict), path, why);
+    /* A cached path to a ROM that has since moved just reopens the picker. */
+    if (!positional && verdict == kSnesRom_Unreadable &&
+        !snesrecomp_rom_is_readable(path))
+        return 0;
+    /* Positional validators preserve the historical warning-and-continue
+     * behavior for explicit command-line overrides. */
+    if (positional) {
+        fprintf(stderr, "[Launcher] Warning: continuing anyway with an "
+                        "unverified ROM\n");
+        return 1;
+    }
+#ifdef _WIN32
+    char box[1700];
+    snprintf(box, sizeof(box), "%s\n\nPlease select the correct ROM file.", why);
+    MessageBoxA(NULL, box, verdict_title(verdict), MB_ICONWARNING | MB_OK);
+#endif
+    return 0;
+}
+
+static void sha256_bytes_to_hex(const uint8_t *sha, char hex[65]) {
+    static const char digits[] = "0123456789abcdef";
+    for (int i = 0; i < 32; ++i) {
+        hex[i * 2] = digits[sha[i] >> 4];
+        hex[i * 2 + 1] = digits[sha[i] & 15];
+    }
+    hex[64] = '\0';
+}
+
+typedef struct MultiShaPolicy {
+    const uint8_t (*hashes)[32];
+    size_t count;
+} MultiShaPolicy;
+
+static int validate_sha_multi(const char *path, int positional,
+                              const void *context) {
+    const MultiShaPolicy *policy = (const MultiShaPolicy *)context;
+    if (!positional && !snesrecomp_rom_is_readable(path)) {
+        fprintf(stderr,
+                "[Launcher] '%s' is not readable - pick again.\n", path);
+        return 0;
+    }
+    if (policy->count &&
+        snesrecomp_rom_match_sha256(path, policy->hashes,
+                                    policy->count) < 0) {
+        fprintf(stderr,
+                "[Launcher] Warning: '%s' is not a recognized ROM for this "
+                "build - loading anyway; the game may misbehave.\n", path);
+    }
+    return 1;
+}
+
+/* ---- Public ---- */
+
+int snesrecomp_launcher_resolve_rom(int argc, char **argv,
+                                    char *out_path, size_t max_len,
+                                    uint32_t expected_crc) {
+    const CrcPolicy policy = {expected_crc};
+    return resolve_rom_common(argc, argv, out_path, max_len,
+                              validate_crc, &policy);
+}
+
+int snesrecomp_launcher_resolve_rom_sha256(int argc, char **argv,
+                                           char *out_path, size_t max_len,
+                                           const uint8_t *expected_sha256) {
+    char hex[65] = "";
+    if (expected_sha256) sha256_bytes_to_hex(expected_sha256, hex);
+    const SnesRomIdentityPolicy policy = {hex, NULL, 0, NULL, NULL};
+    return resolve_rom_common(argc, argv, out_path, max_len,
+                              validate_identity, &policy);
+}
+
+int snesrecomp_launcher_resolve_rom_identity(int argc, char **argv,
+                                             char *out_path, size_t max_len,
+                                             const SnesRomIdentityPolicy *policy) {
+    const SnesRomIdentityPolicy none = {NULL, NULL, 0, NULL, NULL};
+    return resolve_rom_common(argc, argv, out_path, max_len, validate_identity,
+                              policy ? policy : &none);
+}
+
+int snesrecomp_launcher_resolve_rom_sha256_multi(
+        int argc, char **argv, char *out_path, size_t max_len,
+        const uint8_t (*hashes)[32], size_t n_hashes) {
+    const MultiShaPolicy policy = {hashes, n_hashes};
+    return resolve_rom_common(argc, argv, out_path, max_len,
+                              validate_sha_multi, &policy);
+}

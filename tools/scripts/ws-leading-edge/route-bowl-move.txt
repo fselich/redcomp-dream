@@ -1,0 +1,17 @@
+# Uniracers 1P Bowl route (PICK TRACK down x2), then accelerate right.
+wait 640
+press b 2
+wait 180
+press b 2
+wait 180
+press b 2
+wait 100
+press down 2
+wait 100
+press down 2
+wait 100
+press b 2
+wait 180
+press b 2
+wait 360
+press right 4000

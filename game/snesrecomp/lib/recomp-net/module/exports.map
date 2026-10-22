@@ -1,0 +1,7 @@
+{
+  global:
+    rnet_*;
+    rbe_*;
+  local:
+    *;
+};

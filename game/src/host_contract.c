@@ -1,0 +1,33 @@
+/*
+ * The host contract for Uniracers.
+ *
+ * The runner is a library, not an application: a handful of symbols are
+ * deliberately left for the host to define. The framework's desktop host
+ * (snesrecomp_target_desktop_host in CMakeLists.txt) defines the ones that
+ * depend on the frontend -- Die, RtlApuLock/RtlApuUnlock, g_spc_player,
+ * RtlDrawPpuFrame, MkDir, ChangeWindowScale and the widescreen globals.
+ *
+ * What is left is the trace contract: the debug_on_* hooks the generated code
+ * calls on every block entry and WRAM write. They belong to the trace build
+ * (-DSNESRECOMP_ENABLE_TRACE=ON supplies real ones through the debug server)
+ * and are empty here so a production build links.
+ */
+
+#include <stdint.h>
+
+#if !defined(SNESRECOMP_TRACE) || !SNESRECOMP_TRACE
+void debug_on_block_enter(uint32_t pc, uint32_t a, uint32_t x, uint32_t y)
+{
+    (void)pc; (void)a; (void)x; (void)y;
+}
+
+void debug_on_wram_write_byte(uint32_t addr, uint8_t old_val, uint8_t new_val)
+{
+    (void)addr; (void)old_val; (void)new_val;
+}
+
+void debug_on_wram_write_word(uint32_t addr, uint16_t old_val, uint16_t new_val)
+{
+    (void)addr; (void)old_val; (void)new_val;
+}
+#endif

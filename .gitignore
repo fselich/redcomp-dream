@@ -1,0 +1,28 @@
+# Local-only inputs and ROM-derived artifacts. Never commit the ROM.
+/rom/
+*.sfc
+*.smc
+*.srm
+
+# Local workshop / research captures. Keep the durable docs and tools, not the
+# raw ROM-derived logs, frames, dumps or old project copies.
+/work/
+
+# Build trees, generated C and local runtime state.
+/game/build/
+/game/build-*/
+/game/saves/
+/game/src/gen/
+/game/recomp/funcs.h
+/game/config.ini
+/game/keybinds.ini
+/game/input.ini
+/game/rom.cfg
+/game/rom_probe.json
+/game/last_run_report.json
+
+# Local agent/editor configuration.
+/.claude/
+/.opencode/
+
+.DS_Store

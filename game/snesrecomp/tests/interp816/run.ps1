@@ -1,0 +1,62 @@
+$ErrorActionPreference = "Stop"
+$root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$gcc = (Get-Command gcc).Source
+$outDir = Join-Path $root "build"
+New-Item -ItemType Directory -Force $outDir | Out-Null
+
+function Build-BelowNormal([string[]] $CompileArgs, [string] $Output) {
+    Remove-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue
+    $proc = Start-Process -FilePath $gcc -ArgumentList $CompileArgs `
+        -PassThru -NoNewWindow
+    $proc.PriorityClass = "BelowNormal"
+    $proc.WaitForExit()
+    if (-not (Test-Path -LiteralPath $Output)) {
+        throw "gcc did not produce $Output"
+    }
+}
+
+$coreOut = Join-Path $outDir "interp816_test.exe"
+Build-BelowNormal @(
+    "-std=c11", "-Wall", "-Wextra", "-Wno-unused-parameter", "-O1",
+    "-I$root\runner\src\snes",
+    "$root\tests\interp816\interp816_test.c",
+    "$root\runner\src\snes\interp816.c", "-o", $coreOut
+) $coreOut
+& $coreOut
+if ($LASTEXITCODE -ne 0) { throw "interp816 core test failed" }
+
+$tier2Out = Join-Path $outDir "tier2_capture_test.exe"
+Build-BelowNormal @(
+    "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1",
+    "-D_POSIX_C_SOURCE=200809L", "-I$root\runner\src\snes",
+    "$root\tests\interp816\tier2_capture_test.c",
+    "$root\runner\src\sha256.c",
+    "$root\runner\src\snes\tier2_capture.c", "-o", $tier2Out
+) $tier2Out
+Push-Location $outDir
+try {
+    & $tier2Out disabled
+    if ($LASTEXITCODE -ne 0) { throw "tier2 capture disabled test failed" }
+    & $tier2Out lifecycle
+    if ($LASTEXITCODE -ne 0) { throw "tier2 capture lifecycle test failed" }
+    & $tier2Out
+    if ($LASTEXITCODE -ne 0) { throw "tier2 capture test failed" }
+} finally {
+    Pop-Location
+}
+
+$bridgeOut = Join-Path $outDir "bridge_test.exe"
+Build-BelowNormal @(
+    "-std=c11", "-Wall", "-Wextra", "-Wno-unused-parameter", "-O1",
+    "-DSNESRECOMP_TIER2_TEST=1",
+    "-I$root\runner\src", "-I$root\runner\src\snes",
+    "$root\tests\interp816\bridge_test.c",
+    "$root\runner\src\snes\interp816.c",
+    "$root\runner\src\sha256.c",
+    "$root\runner\src\snes\tier2_capture.c",
+    "$root\runner\src\snes\interp_bridge.c",
+    "$root\runner\src\snes\cx4.c",
+    "-lm", "-o", $bridgeOut
+) $bridgeOut
+& $bridgeOut
+if ($LASTEXITCODE -ne 0) { throw "interp bridge test failed" }

@@ -1,0 +1,11 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Import only from desktop hosts that opt in to the shared shader catalog. -->
+  <ItemGroup>
+    <SnesShaderPreset Include="$(MSBuildThisFileDirectory)..\assets\shaders\**\*" />
+  </ItemGroup>
+  <Target Name="StageSnesShaderPresets" AfterTargets="Build">
+    <Copy SourceFiles="@(SnesShaderPreset)"
+          DestinationFiles="@(SnesShaderPreset->'$(OutDir)assets\shaders\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+</Project>

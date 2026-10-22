@@ -1,0 +1,116 @@
+name: release
+
+# Every push to main advances the version tag and publishes the netplay module
+# for it (docs/module.md). Launchers read the newest release's
+# netplay-module-manifest.json, so a merged change reaches players by being
+# merged.
+#
+# Version: the newest vX.Y.Z tag, +1 patch. Put `#minor` or `#major` anywhere
+# in the merge commit message (a PR title and body end up there) to bump that
+# component instead. With no tag yet, the first is the project VERSION in
+# CMakeLists.txt. The tag is created by this workflow only, on the commit it
+# built, after every platform built and tested; no commit is made, so it cannot
+# retrigger itself. Docs-only pushes do not release.
+#
+# Manual run: `bump` overrides the commit message; untick `publish` for a dry
+# run that builds and merges the manifest but tags and releases nothing.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Component to increment"
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      publish:
+        description: "Tag and publish (off: build and check only)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: v
+        env:
+          BUMP: ${{ inputs.bump || 'auto' }}
+        run: |
+          set -euo pipefail
+          last=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$last" ]; then
+            ver=$(sed -n 's/^project(recomp_net VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+            echo "no tag yet: first release is the project version $ver"
+          else
+            IFS=. read -r ma mi pa <<<"${last#v}"
+            msg=$(git log -1 --format=%B)
+            if [ "$BUMP" = auto ]; then
+              if grep -qi '#major' <<<"$msg"; then BUMP=major
+              elif grep -qi '#minor' <<<"$msg"; then BUMP=minor
+              else BUMP=patch; fi
+            fi
+            case "$BUMP" in
+              major) ver="$((ma+1)).0.0" ;;
+              minor) ver="$ma.$((mi+1)).0" ;;
+              *) ver="$ma.$mi.$((pa+1))" ;;
+            esac
+            echo "last $last, bump $BUMP"
+          fi
+          if git rev-parse -q --verify "refs/tags/v$ver" >/dev/null; then
+            echo "tag v$ver already exists" >&2; exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "### Releasing v$ver" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: version
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with: { repository: RetroPortingToolKit/rbengine, path: rbengine }
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+        if: startsWith(matrix.os, 'ubuntu')
+      - run: brew install ninja
+        if: startsWith(matrix.os, 'macos')
+      - run: VERSION="${{ needs.version.outputs.version }}" scripts/package-module.sh "$PWD/rbengine" out
+      - uses: actions/upload-artifact@v4
+        with: { name: "module-${{ matrix.os }}", path: out }
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dl, merge-multiple: true }
+      - name: Merge the platforms' manifest fragments
+        run: |
+          v=v${{ needs.version.outputs.version }}
+          python3 scripts/merge-module-manifest.py \
+            "https://github.com/${{ github.repository }}/releases/download/$v" \
+            dl/netplay-module-manifest.json dl/*.manifest.json
+          (cd dl && sha256sum *.tar.gz > SHA256SUMS)
+      - name: Tag and release
+        if: github.event_name == 'push' || inputs.publish
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          v=v${{ needs.version.outputs.version }}
+          gh release create "$v" --target "$GITHUB_SHA" --title "$v" --generate-notes \
+            dl/*.tar.gz dl/SHA256SUMS dl/netplay-module-manifest.json

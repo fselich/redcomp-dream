@@ -1,0 +1,114 @@
+--- ws-ultrawide/patches/main.c.before	2026-10-21 20:44:37.120993571 +0200
++++ ws-native-map-spike/project/UniracersSNESRecomp/src/main.c	2026-10-21 20:45:41.288950862 +0200
+@@ -65,13 +65,47 @@
+            g_ram[0x00300] <= 1;
+ }
+ 
++/* Race frame width (openspec/changes/uniracers-ws-ultrawide). The target
++ * aspect is SNESRECOMP_WS_ASPECT ("W:H", a decimal, or "auto") or, by
++ * default, the window aspect; never narrower than 16:9. The width is capped
++ * at 512 px: the renderer decodes the 9-bit OAM X as [E-256, 256+E), so left-
++ * margin sprites alias into the right margin once the margin E exceeds 128. */
++enum { kWsRaceMaxWidth = 512 };
++
++static double WsTargetAspect(int drawable_w, int drawable_h)
++{
++    const double wide = 16.0 / 9.0;
++    const char *e = getenv("SNESRECOMP_WS_ASPECT");
++    if (e && *e && strcmp(e, "auto") != 0) {
++        double a = 0, b = 0;
++        const char *colon = strchr(e, ':');
++        if (colon) {
++            a = atof(e);
++            b = atof(colon + 1);
++            if (a > 0 && b > 0) return a / b;
++        } else if ((a = atof(e)) > 0) {
++            return a;
++        }
++    }
++    if (drawable_w > 0 && drawable_h > 0) {
++        double window = (double)drawable_w / drawable_h;
++        return window > wide ? window : wide;
++    }
++    return wide;
++}
++
+ static void PrepareFrame(int drawable_w, int drawable_h,
+                          int *frame_w, int *frame_h)
+ {
+-    (void)drawable_w;
+-    (void)drawable_h;
+-    *frame_w = (WideEnabled() && InLiveRace()) ? 342 : 256;
+     *frame_h = 224;
++    if (!(WideEnabled() && InLiveRace())) {
++        *frame_w = 256;
++        return;
++    }
++    SnesDisplayFrame f = SnesDisplayAspect_ComputeAdaptiveFrame(
++        256, 224, kWsRaceMaxWidth, WsTargetAspect(drawable_w, drawable_h),
++        SnesDisplayAspect_Clamp(g_config.display_aspect));
++    *frame_w = f.width;
+ }
+ 
+ static const SnesDesktopHostGame kGameHost = {
+--- ws-ultrawide/patches/game_rtl.c.before	2026-10-21 20:44:37.119705702 +0200
++++ ws-native-map-spike/project/UniracersSNESRecomp/src/game_rtl.c	2026-10-21 20:45:41.365066165 +0200
+@@ -41,6 +41,7 @@
+ #include "snes/ppu.h"
+ #include "snes/snes.h"
+ #include "snes_runahead.h"
++#include "widescreen.h"
+ 
+ #include <limits.h>
+ #include <stdarg.h>
+@@ -116,6 +117,16 @@
+     return 1;
+ }
+ 
++/* Current widescreen margin per side (g_ws_extra, set by the host from
++ * PrepareFrame), clamped to the 512-px race-width cap. 43 at 16:9. */
++static int WsExtra(void)
++{
++    int e = g_ws_extra;
++    if (e < 0) e = 0;
++    if (e > 128) e = 128;
++    return e;
++}
++
+ static void WsApplyHud(Ppu *ppu)
+ {
+     if (!ppu) return;
+@@ -126,9 +137,11 @@
+     }
+     /* BG3 needs its own widen gate before the elastic band is consulted. */
+     PpuSetWidescreenBg3Widen(ppu, 17);
++    /* Segments follow the margin E (43 at 16:9: -39..8 and 236..299). */
++    const int e = WsExtra();
+     const PpuWsElasticSeg segs[2] = {
+-        { 17, 64, -39, 8 },     /* left group + 4 px inset, 1:1 */
+-        { 193, 256, 236, 299 }, /* timer + right inset, 1:1 */
++        { 17, 64, (int16_t)(4 - e), (int16_t)(51 - e) },     /* left group + 4 px inset, 1:1 */
++        { 193, 256, (int16_t)(193 + e), (int16_t)(256 + e) }, /* timer + right inset, 1:1 */
+     };
+     PpuSetWidescreenLayerElasticBandSlot(ppu, 0, 2, 17, 31, segs, 2);
+ }
+@@ -140,7 +153,7 @@
+  * them. At frame 3500 the native window is [-49, 256]; 16:9 needs [-92, 299]
+  * so the CPU ghost can reach the widened right margin. Keep the vertical
+  * window and every other object path untouched. */
+-#define WS_CULL_MARGIN 43
++/* Margin follows the frame: WsExtra() (43 at 16:9, up to 128). */
+ #define WS_CULL_LEFT   0x0421
+ #define WS_CULL_RIGHT  0x0423
+ 
+@@ -223,8 +236,8 @@
+         s_cull_base_r = cur_r;
+     }
+ 
+-    s_cull_applied_l = (uint16)((int16)s_cull_base_l - WS_CULL_MARGIN);
+-    s_cull_applied_r = (uint16)(s_cull_base_r + WS_CULL_MARGIN);
++    s_cull_applied_l = (uint16)((int16)s_cull_base_l - WsExtra());
++    s_cull_applied_r = (uint16)(s_cull_base_r + WsExtra());
+     WsWrite16(WS_CULL_LEFT, s_cull_applied_l);
+     WsWrite16(WS_CULL_RIGHT, s_cull_applied_r);
+     s_cull_on = 1;

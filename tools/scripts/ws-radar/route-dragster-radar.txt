@@ -1,0 +1,13 @@
+# Dragster 1P with generous menu waits, for deterministic radar on/off runs.
+wait 1000
+press b 4
+wait 300
+press b 4
+wait 300
+press b 4
+wait 300
+press b 4
+wait 300
+press b 4
+wait 600
+press right 4000

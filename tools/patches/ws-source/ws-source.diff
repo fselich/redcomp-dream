@@ -1,0 +1,368 @@
+--- ws-source/patches/game_rtl.c.before	2026-10-21 20:00:48.372024841 +0200
++++ ws-native-map-spike/project/UniracersSNESRecomp/src/game_rtl.c	2026-10-21 20:16:04.145625369 +0200
+@@ -43,9 +43,11 @@
+ #include "snes_runahead.h"
+ 
+ #include <limits.h>
++#include <stdarg.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <time.h>
+ 
+ extern Ppu *g_ppu;
+ extern int snes_netplay_active(void);
+@@ -608,6 +610,7 @@
+     int32_t wx, wy;
+     uint16_t tile;
+     uint8_t valid;
++    int frame;      /* snes_frame_counter of the last native observation */
+ } WsOwSeen;
+ 
+ static WsOwSeen s_ow_seen[WS_OW_CELLS][WS_OW_CELLS];
+@@ -761,6 +764,7 @@
+         s->wy = wy;
+         s->tile = ppu->vram[WsOwMapAddrBase(cx, cy)];
+         s->valid = 1;
++        s->frame = snes_frame_counter;
+         x += 16 - WsOwMod16(sx);
+     }
+ }
+@@ -810,6 +814,301 @@
+     WsOwObserveLine(ppu, (int)line);
+ }
+ 
++/* ── Track-table source (SNESRECOMP_WS_OFFWINDOW=source) ──────────────────
++ *
++ * The whole track is in WRAM bank $7F from load to finish (RNC1-unpacked by
++ * $81:B8F1): a u16 piece-id grid at $7F:000F (cols x rows, 0x8000 bytes) and
++ * a library of 4x4-cell pieces at $7F:800F. See docs/UNIRACERS_TRACK_FORMAT.md.
++ * Margin cells that Option A cannot verify are read from that table at
++ * world + anchor. The anchor (table cell - world key, constant per race) is
++ * searched from the verified native cells and re-checked every frame; while
++ * it is invalid the margins are masked exactly as in `ring` mode.
++ * Ring cells that read 0x0000 are never used as evidence: at race start the
++ * game leaves some ring cells unwritten (they show 0x0000 natively for a few
++ * frames), so they say nothing about the table. Nor are words that occur
++ * nowhere in the piece library (the race-start overlay draws such words into
++ * the ring). The search uses every verified cell still in the seen table, not
++ * only this frame's: the map is static, so older observations stay true and
++ * their wider footprint resolves repetitive geometry (Switcher). The
++ * self-check uses this frame's cells only. Repeated sections can leave a few
++ * equally good anchors; up to WS_SRC_MAX_ANCHORS are kept and a margin cell is
++ * served only where all of them give the same word (the self-check prunes
++ * them as the camera moves on). Presentation-only: reads
++ * g_ram, writes nothing. openspec/changes/uniracers-ws-source. */
++#define WS_SRC_MIN_SAMPLES 8
++#define WS_SRC_MAX_SAMPLES 256
++#define WS_SRC_CHECK_SAMPLES 32
++#define WS_SRC_MAX_CANDIDATES 4096
++#define WS_SRC_MAX_PIECES 2048
++#define WS_SRC_MAX_ANCHORS 8
++
++typedef struct {
++    int32_t wx, wy;
++    uint16_t tile;
++} WsSrcSample;
++
++static int s_src_valid;                      /* number of live anchors */
++static int32_t s_src_ax[WS_SRC_MAX_ANCHORS], s_src_ay[WS_SRC_MAX_ANCHORS];
++static int s_src_cols, s_src_rows;          /* grid size in cells */
++static unsigned s_src_generation;
++static int s_src_race_frame0 = -1;          /* first live frame of this scene */
++static uint64_t s_src_served, s_src_check_fail, s_src_anchors;
++static uint8_t s_src_word_present[0x10000 / 8];  /* words in the piece library */
++static uint16_t s_src_present_end;              /* library end it was built for */
++static FILE *s_src_log;
++
++static void WsSrcLog(const char *fmt, ...)
++{
++    const char *path = getenv("SNESRECOMP_WS_SOURCE_LOG");
++    if (!path || !*path) return;
++    if (!s_src_log) {
++        s_src_log = fopen(path, "w");
++        if (!s_src_log) return;
++    }
++    va_list ap;
++    va_start(ap, fmt);
++    vfprintf(s_src_log, fmt, ap);
++    va_end(ap);
++    fflush(s_src_log);
++}
++
++static uint16_t WsSrcRead16(uint32_t off)
++{
++    return (uint16_t)(g_ram[0x10000 + off] | (g_ram[0x10000 + off + 1] << 8));
++}
++
++/* Grid dimensions from the unpacked header: $7F:000D = cols/4, $7F:000E =
++ * rows/4 (0 means 256). The id grid is always 0x8000 bytes. */
++static int WsSrcHeader(void)
++{
++    int cb = (g_ram[0x1000D] ? g_ram[0x1000D] : 256);
++    int rb = (g_ram[0x1000E] ? g_ram[0x1000E] : 256);
++    int cols = cb * 4, rows = rb * 4;               /* blocks */
++    if (cols * rows * 2 != 0x8000) return 0;
++    s_src_cols = cols * 4;
++    s_src_rows = rows * 4;
++    /* Library end ($7F:000B-000C, rewritten by the game at load). Rebuild the
++     * word-presence set when it changes (new track). */
++    uint16_t end = WsSrcRead16(0x000B);
++    if (end != s_src_present_end) {
++        s_src_present_end = end;
++        memset(s_src_word_present, 0, sizeof(s_src_word_present));
++        uint32_t lim = end > 0x800F ? end : 0xFFFE;
++        for (uint32_t off = 0x800F; off + 1 < lim && off + 1 <= 0xFFFF; off += 2) {
++            uint16_t w = WsSrcRead16(off);
++            s_src_word_present[w >> 3] |= (uint8_t)(1u << (w & 7));
++        }
++    }
++    return 1;
++}
++
++static int WsSrcWordUsable(uint16_t w)
++{
++    return w && (s_src_word_present[w >> 3] & (1u << (w & 7)));
++}
++
++/* Table word for table cell (tx, ty). Outside the grid the game shows
++ * 0x0000. Returns 0 only for an id pointing past the bank. */
++static int WsSrcCell(int32_t tx, int32_t ty, uint16_t *out)
++{
++    if (tx < 0 || ty < 0 || tx >= s_src_cols || ty >= s_src_rows) {
++        *out = 0;
++        return 1;
++    }
++    uint32_t id = WsSrcRead16(0x000F + 2u * ((uint32_t)(ty >> 2) *
++                                             (uint32_t)(s_src_cols >> 2) +
++                                             (uint32_t)(tx >> 2)));
++    uint32_t off = 0x800F + id * 32u + (uint32_t)(ty & 3) * 8u +
++                   (uint32_t)(tx & 3) * 2u;
++    if (off + 1 > 0xFFFF) return 0;
++    *out = WsSrcRead16(off);
++    return 1;
++}
++
++/* Verified native cells usable as evidence: this frame's only, or every cell
++ * still held in the seen table (all_frames). */
++static int WsSrcSamples(WsSrcSample *out, int max, int all_frames)
++{
++    int n = 0;
++    for (int cy = 0; cy < WS_OW_CELLS && n < max; cy++) {
++        for (int cx = 0; cx < WS_OW_CELLS && n < max; cx++) {
++            const WsOwSeen *s = &s_ow_seen[cy][cx];
++            if (!s->valid || !WsSrcWordUsable(s->tile))
++                continue;
++            if (!all_frames && s->frame != snes_frame_counter)
++                continue;
++            out[n].wx = s->wx;
++            out[n].wy = s->wy;
++            out[n].tile = s->tile;
++            n++;
++        }
++    }
++    return n;
++}
++
++static int WsSrcAgreement(const WsSrcSample *smp, int n, int32_t ax,
++                          int32_t ay, int max_miss)
++{
++    int ok = 0, miss = 0;
++    for (int i = 0; i < n; i++) {
++        uint16_t w;
++        if (WsSrcCell(smp[i].wx + ax, smp[i].wy + ay, &w) && w == smp[i].tile)
++            ok++;
++        else if (++miss > max_miss)
++            return -1;
++    }
++    return ok;
++}
++
++/* Find the unique anchor matching >= 95 % of this frame's verified cells.
++ * Seeds from the rarest sampled word; candidate positions come from a
++ * per-piece index of where that word occurs. */
++static void WsSrcSearch(void)
++{
++    static WsSrcSample smp[WS_SRC_MAX_SAMPLES];
++    static uint16_t piece_mask[WS_SRC_MAX_PIECES];
++    if (!WsSrcHeader()) return;
++    int n = WsSrcSamples(smp, WS_SRC_MAX_SAMPLES, 1);
++    if (n < WS_SRC_MIN_SAMPLES) {
++        if (snes_frame_counter % 30 == 0)
++            WsSrcLog("%d anchor wait samples=%d\n", snes_frame_counter, n);
++        return;
++    }
++    int max_miss = n / 20;                       /* >= 95 % agreement */
++
++    /* Try seeds from rarest to commonest word (at most four distinct). */
++    int tried = 0;
++    uint16_t tried_words[4];
++    clock_t t0 = clock();
++    while (tried < 4) {
++        int seed = -1, seed_count = 0x7FFFFFFF;
++        for (int i = 0; i < n; i++) {
++            int skip = 0;
++            for (int k = 0; k < tried; k++)
++                if (tried_words[k] == smp[i].tile) skip = 1;
++            if (skip) continue;
++            int c = 0;
++            for (int j = 0; j < n; j++) c += smp[j].tile == smp[i].tile;
++            if (c < seed_count) { seed_count = c; seed = i; }
++        }
++        if (seed < 0) break;
++        uint16_t word = smp[seed].tile;
++        tried_words[tried++] = word;
++
++        /* Which positions inside each piece hold the seed word. */
++        uint32_t pieces = (0x10000u - 0x800Fu) / 32u;
++        if (pieces > WS_SRC_MAX_PIECES) pieces = WS_SRC_MAX_PIECES;
++        for (uint32_t id = 0; id < pieces; id++) {
++            uint16_t m = 0;
++            for (int k = 0; k < 16; k++)
++                if (WsSrcRead16(0x800F + id * 32u + (uint32_t)k * 2u) == word)
++                    m |= (uint16_t)(1u << k);
++            piece_mask[id] = m;
++        }
++        int bcols = s_src_cols >> 2, brows = s_src_rows >> 2;
++        int candidates = 0, survivors = 0;
++        int32_t sur_ax[WS_SRC_MAX_ANCHORS], sur_ay[WS_SRC_MAX_ANCHORS];
++        for (int by = 0; by < brows && candidates <= WS_SRC_MAX_CANDIDATES; by++) {
++            for (int bx = 0; bx < bcols; bx++) {
++                uint32_t id = WsSrcRead16(0x000F + 2u * (uint32_t)(by * bcols + bx));
++                if (id >= pieces || !piece_mask[id]) continue;
++                for (int k = 0; k < 16; k++) {
++                    if (!(piece_mask[id] & (1u << k))) continue;
++                    candidates++;
++                    int32_t ax = bx * 4 + (k & 3) - smp[seed].wx;
++                    int32_t ay = by * 4 + (k >> 2) - smp[seed].wy;
++                    if (WsSrcAgreement(smp, n, ax, ay, max_miss) < 0) continue;
++                    int dup = 0;
++                    for (int i = 0; i < survivors && i < WS_SRC_MAX_ANCHORS; i++)
++                        if (sur_ax[i] == ax && sur_ay[i] == ay) dup = 1;
++                    if (dup) continue;
++                    if (survivors < WS_SRC_MAX_ANCHORS) {
++                        sur_ax[survivors] = ax;
++                        sur_ay[survivors] = ay;
++                    }
++                    survivors++;
++                }
++            }
++        }
++        if (candidates > WS_SRC_MAX_CANDIDATES) continue;   /* too common */
++        double ms = 1000.0 * (double)(clock() - t0) / CLOCKS_PER_SEC;
++        if (survivors >= 1 && survivors <= WS_SRC_MAX_ANCHORS) {
++            for (int i = 0; i < survivors; i++) {
++                s_src_ax[i] = sur_ax[i];
++                s_src_ay[i] = sur_ay[i];
++            }
++            s_src_valid = survivors;
++            s_src_anchors++;
++            WsSrcLog("%d anchor ok ax=%d ay=%d anchors=%d grid=%dx%d samples=%d "
++                     "seed=%04x candidates=%d latency=%d search_ms=%.3f\n",
++                     snes_frame_counter, sur_ax[0], sur_ay[0], survivors,
++                     s_src_cols, s_src_rows, n, word, candidates,
++                     s_src_race_frame0 >= 0 ? snes_frame_counter - s_src_race_frame0 : -1,
++                     ms);
++            return;
++        }
++        WsSrcLog("%d anchor retry seed=%04x candidates=%d survivors=%d "
++                 "search_ms=%.3f\n", snes_frame_counter, word, candidates,
++                 survivors, ms);
++        if (survivors > 0) return;      /* too ambiguous: wait for the camera */
++    }
++}
++
++/* After each drawn frame: keep, verify or (re)establish the anchor. */
++static void WsSrcFrame(void)
++{
++    if (s_src_generation != s_ow_scene_generation) {
++        s_src_generation = s_ow_scene_generation;
++        if (s_src_valid)
++            WsSrcLog("%d anchor dropped: scene reset\n", snes_frame_counter);
++        s_src_valid = 0;
++        s_src_race_frame0 = snes_frame_counter;
++    }
++    if (!s_src_valid) {
++        WsSrcSearch();
++        return;
++    }
++    if (!WsSrcHeader()) {
++        s_src_valid = 0;
++        WsSrcLog("%d anchor dropped: header invalid\n", snes_frame_counter);
++        return;
++    }
++    WsSrcSample smp[WS_SRC_CHECK_SAMPLES];
++    int n = WsSrcSamples(smp, WS_SRC_CHECK_SAMPLES, 0);
++    if (n == 0) return;
++    int kept = 0, before = s_src_valid;
++    for (int i = 0; i < s_src_valid; i++) {
++        int ok = WsSrcAgreement(smp, n, s_src_ax[i], s_src_ay[i], n);
++        if (ok * 20 < n * 19) {
++            WsSrcLog("%d anchor (%d,%d) dropped: self-check %d/%d\n",
++                     snes_frame_counter, s_src_ax[i], s_src_ay[i], ok, n);
++            continue;
++        }
++        if (ok != n)
++            WsSrcLog("%d self-check (%d,%d) %d/%d\n", snes_frame_counter,
++                     s_src_ax[i], s_src_ay[i], ok, n);
++        s_src_ax[kept] = s_src_ax[i];
++        s_src_ay[kept] = s_src_ay[i];
++        kept++;
++    }
++    s_src_valid = kept;
++    if (!kept) {
++        s_src_check_fail++;
++        WsSrcLog("%d anchor dropped: no anchor passes the self-check\n",
++                 snes_frame_counter);
++    } else if (kept != before && kept == 1) {
++        WsSrcLog("%d anchor resolved ax=%d ay=%d\n", snes_frame_counter,
++                 s_src_ax[0], s_src_ay[0]);
++    }
++}
++
++static void WsSrcInvalidate(void)
++{
++    if (s_src_valid)
++        WsSrcLog("%d anchor dropped: race not live\n", snes_frame_counter);
++    s_src_valid = 0;
++}
++
+ /* Renderer hook: decide the tile word for a margin sample of BG1. The map
+  * address is checked against the race BG1 ring so HUD bands that repoint the
+  * layer's map base are left alone. */
+@@ -832,6 +1131,23 @@
+     if (s->valid && s->wx == wx && s->wy == wy && s->tile == tile)
+         return tile;
+ 
++    if (WsOffwindowMode() == 2 && s_src_valid) {
++        uint16_t w;
++        int agree = WsSrcCell(wx + s_src_ax[0], wy + s_src_ay[0], &w);
++        for (int i = 1; agree && i < s_src_valid; i++) {
++            uint16_t wi;
++            agree = WsSrcCell(wx + s_src_ax[i], wy + s_src_ay[i], &wi) && wi == w;
++        }
++        if (agree) {
++            s_src_served++;
++            if (!s_ow_logged[cy][cx]) {
++                s_ow_logged[cy][cx] = 1;
++                WsOwLogVisit(cx, cy, wx, wy, tile, w, 0);
++            }
++            return w;
++        }
++    }
++
+     if (WsOffwindowMode() == 3 && s_gh_valid) {
+         WsGhostCell *g = &s_gh[cy][cx];
+         if (g->valid && g->wx == wx && g->wy == wy) {
+@@ -1287,7 +1603,11 @@
+     if (ow_mode) {
+         g_snes_beam_line_hook = NULL;
+         g_ppu_margin_tile_hook = NULL;
++        if (ow_mode == 2 && s_ow_frame_active)
++            WsSrcFrame();
+         s_ow_frame_active = 0;
++    } else {
++        WsSrcInvalidate();
+     }
+     WsRepeatEnd(g_ppu);
+ }

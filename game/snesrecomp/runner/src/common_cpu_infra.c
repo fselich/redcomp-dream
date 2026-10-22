@@ -1,0 +1,1155 @@
+#include "common_cpu_infra.h"
+#include "audio_trace.h"
+#include "framedump.h"
+#include "types.h"
+#include "common_rtl.h"
+#include "recomp_hw.h"
+#include "snes/cpu.h"
+#include "snes/snes.h"
+#include "snes/msu1.h"
+#include "snes/interp_bridge.h"
+#include "snes/tier2_capture.h"
+#include "sha256.h"
+#include "program_module.h"
+#include "util.h"
+#include "cpu_trace.h"
+#include "debug_server.h"
+#include "cpu_state.h"
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#ifndef SNESRECOMP_FUNC_SNAPSHOT
+#define SNESRECOMP_FUNC_SNAPSHOT SNESRECOMP_TRACE
+#endif
+
+#ifndef SNESRECOMP_STACK_BALANCE_DIAGNOSTICS
+#define SNESRECOMP_STACK_BALANCE_DIAGNOSTICS SNESRECOMP_TRACE
+#endif
+
+#ifndef SNESRECOMP_BOOT_WATCHDOG_DIAGNOSTICS
+#define SNESRECOMP_BOOT_WATCHDOG_DIAGNOSTICS SNESRECOMP_TRACE
+#endif
+
+Snes *g_snes;
+Cpu *g_snes_cpu;
+
+bool g_fail;
+const RtlGameInfo *g_rtl_game_info;
+
+/* Opt-in interp-coverage feedback manifest, written on process exit. The
+ * tier-2 gap recorder in the interp bridge names every entry the interpreter
+ * had to resolve at runtime; this serializes that promotion worklist (schema
+ * "snesrecomp tier2 coverage v1") so tools/tier2_ingest.py can fold it back
+ * into the cfg and the next regen promotes those entries to AOT — the LLE-first
+ * burn-down loop. SNESRECOMP_TIER2_MANIFEST can override the unique per-run
+ * path. First sightings are also flushed to an append-only JSONL journal, so
+ * earlier sessions and crash-time discoveries are preserved. */
+static void rtl_write_tier2_coverage_manifest(void) {
+  Tier2CoverageWriteDefaultManifest(g_rtl_game_info ? g_rtl_game_info->title
+                                                     : "unknown");
+}
+
+/* Registered game title (e.g. "mmx", "Rockman X (Japan v1.1)"), or "unknown"
+ * before registration. Lets framework code (debug_server tier2_dump) name
+ * per-variant coverage artifacts without pulling the whole struct. */
+const char *rtl_game_title(void) {
+  return (g_rtl_game_info && g_rtl_game_info->title) ? g_rtl_game_info->title
+                                                     : "unknown";
+}
+
+static void rtl_snes_charge_master_cycles(Snes *snes, uint64_t clocks) {
+  g_cpu.master_cycles += clocks;
+  snes_sync_master_clock(snes, g_cpu.master_cycles);
+}
+
+void RtlRegisterGame(const RtlGameInfo *info) {
+  g_rtl_game_info = info;
+  tier2_capture_set_default_enabled(info && info->tier2_capture);
+  /* Arm MSU-1 from the environment for every game, with no per-game
+   * wiring. Inert (default-OFF) unless SNESRECOMP_MSU1 is set. A game's
+   * main.c may additionally call msu1_set_rom_path() to enable the
+   * "auto" base-from-ROM-name mode. */
+  msu1_init();
+
+}
+
+/* The audio trace's port ring stamps each event with the beam position. */
+static void snes_beam_probe_for_audio_trace(uint16_t *vpos, uint16_t *hpos) {
+  *vpos = g_snes ? g_snes->vPos : 0;
+  *hpos = g_snes ? g_snes->hPos : 0;
+}
+
+uint8_t *SnesRomPtr(uint32 v) {
+  return (uint8 *)RomPtr(v);
+}
+
+// Apply the native-mode CPU state the real ROM's reset vector would
+// have established. See header comment.
+void SnesEnterNativeMode(void) {
+  g_snes_cpu->e = false;
+  g_snes_cpu->sp = 0x01FF;
+  g_snes_cpu->dp = 0;
+  g_snes_cpu->mf = false;
+  g_snes_cpu->xf = false;
+  g_snes_cpu->d = false;
+  g_snes_cpu->i = true;
+}
+
+// Resolve a 16-bit-indirect-through-DP pointer using the current
+// data bank register. See comment in common_rtl.h for why this
+// matters for `(dp)`, `(dp),Y`, `(dp,X)` addressing modes.
+uint8_t *IndirPtrDB(uint8 dp_addr, uint16 offs) {
+  LongPtr p = MAKE_LONG((uint16)g_ram[dp_addr] | ((uint16)g_ram[dp_addr + 1] << 8),
+                        g_snes_cpu->db);
+  return IndirPtr(p, offs);
+}
+
+// Debug: recomp function call stack for watchdog diagnostics.
+const char *g_last_recomp_func = "(none)";
+// Tier 1.5 call-trace depth cap. Originally 16; bumped to 64 because
+// SMW peak call depth is ~10 but Tier 1.5 attribution silently
+// degrades past the cap (g_last_recomp_func and parent fields go
+// stale). 64 gives 6x headroom for any conceivable call chain at
+// negligible memory cost (8 bytes/slot * 48 extra slots = 384 bytes).
+#define RECOMP_STACK_DEPTH 64
+const char *g_recomp_stack[RECOMP_STACK_DEPTH];
+int g_recomp_stack_top = 0;
+
+/* Per-frame 65816 stack-entry level (cpu->S at function entry), parallel
+ * to g_recomp_stack and indexed by the same g_recomp_stack_top. The
+ * function prologue records _entry_s here; pops are implicit (top--).
+ * Used by cpu_resolve_ancestor_skip() to turn a return-to-ancestor RTS
+ * (manual PLA/PLX/PLB rebalance to an ancestor's entry level, then RTS)
+ * into a SKIP_N non-local return through the existing call-site
+ * decrement contract. See ISSUES.md "shared-tail multi-level non-local
+ * return" (the fish-explosion OAM wipe). */
+uint16_t g_cpu_entry_s[RECOMP_STACK_DEPTH];
+/* HLE forwarding and interpreter attribution scopes are not generated guest
+ * callers, so their entry-S must not take part in return-to-ancestor lookup. */
+static uint8_t g_cpu_entry_s_valid[RECOMP_STACK_DEPTH];
+/* Expected positive S delta when a generated callee consumes the hardware
+ * return frame that its generated caller pushed. */
+static uint8_t g_cpu_entry_return_frame[RECOMP_STACK_DEPTH];
+/* Per-slot: this frame was entered by a guest TAIL call (JMP/JML), so it
+ * shares its caller's guest frame and its caller returns its RecompReturn
+ * VERBATIM rather than decrementing it. Set by cpu_take_tailcall_return_context
+ * when a prologue actually adopts the context; cleared by RecompStackPush.
+ * Consulted when converting a host-frame index into a SKIP_N unwind depth —
+ * see cpu_resolve_unwind_depth(). */
+static uint8_t g_cpu_entry_tailcall[RECOMP_STACK_DEPTH];
+static uint8_t g_tailcall_context_valid;
+static uint16_t g_tailcall_entry_s;
+static uint8_t g_tailcall_hrv;
+static unsigned g_interrupt_context_depth;
+
+void cpu_interrupt_context_enter(void) {
+  g_interrupt_context_depth++;
+}
+
+void cpu_interrupt_context_leave(void) {
+  if (g_interrupt_context_depth) g_interrupt_context_depth--;
+}
+
+int cpu_interrupt_context_active(void) {
+  return g_interrupt_context_depth != 0;
+}
+
+void cpu_tailcall_inherit_return_context(uint16_t entry_s, uint8_t hrv) {
+  g_tailcall_entry_s = entry_s;
+  g_tailcall_hrv = hrv;
+  g_tailcall_context_valid = 1;
+}
+
+int cpu_take_tailcall_return_context(uint16_t *entry_s, uint8_t *hrv) {
+  /* HLE forwarding stubs call this with NULL immediately after their stack
+   * push. They deliberately have no generated prologue, so exclude their
+   * seeded diagnostic baseline from production ancestor scans. */
+  if (!entry_s && g_recomp_stack_top > 0)
+    g_cpu_entry_s_valid[g_recomp_stack_top - 1] = 0;
+  if (!g_tailcall_context_valid) return 0;
+  if (entry_s) *entry_s = g_tailcall_entry_s;
+  if (hrv) *hrv = g_tailcall_hrv;
+  g_tailcall_context_valid = 0;
+  /* A caller passing NULL is SWALLOWING a stale context, not adopting one
+   * (the HLE wrappers and the LLE unwind path do this deliberately), so it
+   * must not be recorded as a tail entry. A prologue that asks for the
+   * entry_s/hrv out-params is the real tail-entered case: its RecompStackPush
+   * already ran, so top-1 is its own slot. */
+  if (entry_s && g_recomp_stack_top > 0)
+    g_cpu_entry_tailcall[g_recomp_stack_top - 1] = 1;
+  return 1;
+}
+
+void cpu_tailcall_context_save(CpuTailcallContextSave *out) {
+  if (!out) return;
+  out->valid = g_tailcall_context_valid;
+  out->entry_s = g_tailcall_entry_s;
+  out->hrv = g_tailcall_hrv;
+}
+
+void cpu_tailcall_context_restore(const CpuTailcallContextSave *in) {
+  if (!in) return;
+  g_tailcall_context_valid = in->valid;
+  g_tailcall_entry_s = in->entry_s;
+  g_tailcall_hrv = in->hrv;
+}
+
+/* ── Unresolved-site balanced abandon + ALWAYS-ON hit accounting ──────
+ * Correctness layer (compiled in every configuration, unlike the
+ * cpu_trace_* slot table which no-ops at SNESRECOMP_TRACE=0). Every
+ * abandon is a real worklist item — a control transfer the recompiler
+ * could not resolve whose handler's side effects were skipped — so the
+ * hit table is the primary signal for WHICH dispatch sites to
+ * authorize next. Bounded per-site table; first hit per site emits one
+ * stderr line; the post-mortem report dumps the whole table. */
+#define UNRESOLVED_ABANDON_MAX 256
+typedef struct UnresolvedAbandonSite {
+  uint32_t site_pc24;
+  uint64_t hits;
+  int32_t first_frame;
+  int32_t last_frame;
+  uint8_t last_hrv;
+} UnresolvedAbandonSite;
+static UnresolvedAbandonSite g_unresolved_abandons[UNRESOLVED_ABANDON_MAX];
+static int g_unresolved_abandon_count;
+static uint64_t g_unresolved_abandon_total;
+static uint64_t g_unresolved_abandon_overflow;
+
+RecompReturn cpu_unresolved_abandon_balanced(CpuState *cpu, uint32_t site_pc24,
+                                             uint16_t entry_s, uint8_t hrv) {
+  extern int snes_frame_counter;
+  /* hrv carries the paired caller's pushed frame SIZE (0/2/3) under the
+   * 2026-06-09 host_return_valid encoding. A literal 1 means a setter
+   * missed the encoding upgrade — warn once, loudly, and treat it as
+   * size-unknown (restore the entry baseline only; the 2-3 byte frame
+   * leak it leaves is the pre-fix behavior, strictly no worse). */
+  static int warned_legacy_hrv;
+  if (hrv == 1) {
+    if (!warned_legacy_hrv) {
+      warned_legacy_hrv = 1;
+      fprintf(stderr,
+              "[abandon_balanced] LEGACY hrv==1 seen at $%06X (S=$%04X "
+              "entry_s=$%04X) — a host_return_valid setter still writes "
+              "boolean 1; frame size unknown, restoring entry baseline only\n",
+              (unsigned)site_pc24, cpu->S, entry_s);
+    }
+    hrv = 0;
+  }
+  g_unresolved_abandon_total++;
+  int i;
+  for (i = 0; i < g_unresolved_abandon_count; i++) {
+    if (g_unresolved_abandons[i].site_pc24 == site_pc24) break;
+  }
+  if (i == g_unresolved_abandon_count) {
+    if (i < UNRESOLVED_ABANDON_MAX) {
+      g_unresolved_abandon_count++;
+      g_unresolved_abandons[i].site_pc24 = site_pc24;
+      g_unresolved_abandons[i].hits = 0;
+      g_unresolved_abandons[i].first_frame = snes_frame_counter;
+      fprintf(stderr,
+              "[unresolved-abandon] first hit site=$%06X frame=%d "
+              "entry_s=$%04X hrv=%u (handler side effects SKIPPED — "
+              "authorize this dispatch)\n",
+              (unsigned)site_pc24, snes_frame_counter, entry_s, hrv);
+    } else {
+      g_unresolved_abandon_overflow++;
+      i = -1;
+    }
+  }
+  if (i >= 0) {
+    g_unresolved_abandons[i].hits++;
+    g_unresolved_abandons[i].last_frame = snes_frame_counter;
+    g_unresolved_abandons[i].last_hrv = hrv;
+  }
+  cpu->S = (uint16_t)(entry_s + hrv);
+  return RECOMP_RETURN_NORMAL;
+}
+
+void CpuUnresolvedAbandonDumpJson(FILE *f) {
+  fprintf(f, "  \"unresolved_abandons\": {\n"
+             "    \"total_hits\": %llu,\n"
+             "    \"distinct_sites\": %d,\n"
+             "    \"overflowed_hits\": %llu,\n"
+             "    \"sites\": [",
+          (unsigned long long)g_unresolved_abandon_total,
+          g_unresolved_abandon_count,
+          (unsigned long long)g_unresolved_abandon_overflow);
+  for (int i = 0; i < g_unresolved_abandon_count; i++) {
+    const UnresolvedAbandonSite *s = &g_unresolved_abandons[i];
+    fprintf(f, "%s\n      {\"site\": \"0x%06X\", \"hits\": %llu, "
+               "\"first_frame\": %d, \"last_frame\": %d, \"last_hrv\": %u}",
+            i ? "," : "", (unsigned)s->site_pc24,
+            (unsigned long long)s->hits, s->first_frame, s->last_frame,
+            s->last_hrv);
+  }
+  fprintf(f, "\n    ]\n  },\n");
+}
+
+/* Convert a matched ancestor's frame INDEX into the SKIP_N unwind depth the
+ * generated return contract expects.
+ *
+ * Those are not the same number. `g_recomp_stack` counts HOST frames; the
+ * SKIP_N contract decrements once per GUEST frame, because the decrement is
+ * emitted at a call site (`return _r - 1;`). A guest TAIL call (JMP/JML)
+ * creates a host frame without creating a guest frame: the emitted caller
+ * does `_r = callee(cpu); RecompStackPop(); return _r;` — verbatim, no
+ * decrement — since caller and callee share one guest frame. Every such frame
+ * on the unwind path therefore inflates a raw host-frame count by one.
+ *
+ * Measured (GWED f3305, bank_00_A6EB black-screen): the live array was
+ *
+ *   [5] A7F0 entry_s=$0FD9  <- tail-entered from A765 (shares its entry_s)
+ *   [4] A765 entry_s=$0FD9
+ *   [3] A729 entry_s=$0FDB  <- match, ret_s=$0FDB
+ *   [2] A6EB entry_s=$0FE0
+ *
+ * The raw count (top-1)-i gave 2, but only ONE decrement happens on the way
+ * down (A765 returns A7F0's value verbatim), so A729 emitted 1 instead of 0,
+ * A6EB took SKIP_PROPAGATION instead of absorbing, and skipped the PLA/PLB
+ * epilogue that restores its PHB/PHK/PLB+PHA prologue pushes — the -3 that
+ * ends as a return into WRAM and a wild stack.
+ *
+ * Derivation: with value_k the RecompReturn frame k emits, and frame k
+ * returning verbatim exactly when frame k+1 was tail-entered,
+ *     value_k = value_{k+1} - (tailcall[k+1] ? 0 : 1)
+ * and the matched ancestor i must itself decrement to NORMAL, i.e.
+ * value_{i+1} == 1. Hence
+ *     N = 1 + |{ m in [i+2, top-1] : !tailcall[m] }|
+ * which collapses to the previous (top-1)-i whenever no frame on the path was
+ * tail-entered, so chains without tail calls are bit-identical. */
+static int cpu_resolve_unwind_depth(int i, int top) {
+  int n = 1;
+  for (int m = i + 2; m <= top - 1; m++)
+    if (!g_cpu_entry_tailcall[m]) n++;
+  return n;
+}
+
+/* DIAGNOSTIC: print the live recomp frame array — every slot's function name,
+ * its guest S at entry, and the return-frame size (hrv) recorded for it. The
+ * unwind depth a non-local return needs is a property of THIS array, not of
+ * the call graph read off the generated source: a chain can contain frames
+ * that are not obvious from a callee list, so an assumed caller/callee
+ * adjacency in g_cpu_entry_s[] can simply be wrong. `mark` (0 for none) is
+ * highlighted so a resolve target can be located in the real layout. */
+void recomp_dump_frame_array(FILE *out, uint16_t mark) {
+  int top = g_recomp_stack_top;
+  for (int i = top - 1; i >= 0; i--)
+    fprintf(out, "    [%2d] entry_s=$%04X hrv=%u %s%s%s%s\n", i,
+            (unsigned)g_cpu_entry_s[i], (unsigned)g_cpu_entry_return_frame[i],
+            g_recomp_stack[i] ? g_recomp_stack[i] : "?",
+            g_cpu_entry_tailcall[i] ? " (tail)" : "",
+            (i == top - 1) ? "   <- innermost" : "",
+            (mark && g_cpu_entry_s[i] == mark) ? "   <== MATCH" : "");
+  fflush(out);
+}
+
+int cpu_resolve_ancestor_skip(uint16_t ret_s) {
+  /* The current (top-1) frame is the one whose RTS we are resolving; it
+   * is NOT a match (its entry_s != ret_s, else the balanced host-return
+   * path handled it). Scan STRICT ancestors for the nearest frame whose
+   * entry_s == ret_s — that frame should host-return NORMAL to its
+   * caller (which resumes at its natural continuation). Return the SKIP
+   * count = how many RECOMP_RETURN levels to unwind to reach it; -1 if
+   * none (caller falls back to the normal dispatch-miss path, no change
+   * in behavior). */
+  int top = g_recomp_stack_top;
+  if (top < 2 || top > RECOMP_STACK_DEPTH) return -1;
+  int result = -1;
+  for (int i = top - 2; i >= 0; i--) {
+    if (g_cpu_entry_s_valid[i] && g_cpu_entry_s[i] == ret_s) {
+      result = cpu_resolve_unwind_depth(i, top);
+      break;
+    }
+  }
+  /* DIAGNOSTIC (SNESRECOMP_TRAP_ANCESTOR=<substr of a function name>): dump
+   * the LIVE frame array whenever a matching function is anywhere on the
+   * recomp stack, with the target and the resolved skip count. Reasoning about
+   * unwind depth from the generated source is unreliable — call chains contain
+   * intermediate frames that are not obvious from the callee list, so an
+   * assumed caller/callee adjacency in g_cpu_entry_s[] can simply be wrong.
+   * This prints the real layout at the moment the decision is made, so the
+   * skip count can be checked against actual frames rather than a model.
+   * Behaviour is unchanged: `result` is computed exactly as before. */
+  {
+    static const char *s_ta = (const char *)-1;
+    static int s_lo = 0, s_hi = 0;
+    if (s_ta == (const char *)-1) {
+      s_ta = getenv("SNESRECOMP_TRAP_ANCESTOR");
+      const char *r = getenv("SNESRECOMP_TRAP_ANCESTOR_FRAMES");
+      if (r && sscanf(r, "%d-%d", &s_lo, &s_hi) != 2) s_lo = s_hi = 0;
+    }
+    extern int snes_frame_counter;
+    if (s_ta && *s_ta &&
+        (s_hi == 0 ||
+         (snes_frame_counter >= s_lo && snes_frame_counter <= s_hi))) {
+      int hit = 0;
+      for (int i = 0; i < top && !hit; i++) {
+        if (!g_recomp_stack[i]) continue;
+        const char *p = s_ta;
+        while (*p && !hit) {
+          const char *c = strchr(p, ',');
+          size_t n = c ? (size_t)(c - p) : strlen(p);
+          if (n) {
+            char buf[64];
+            if (n >= sizeof buf) n = sizeof buf - 1;
+            memcpy(buf, p, n); buf[n] = 0;
+            if (strstr(g_recomp_stack[i], buf)) hit = 1;
+          }
+          p = c ? c + 1 : p + strlen(p);
+        }
+      }
+      if (hit) {
+        fprintf(stderr, "[trap-anc] f%d ret_s=$%04X top=%d -> skip=%d\n",
+                snes_frame_counter, (unsigned)ret_s, top, result);
+        recomp_dump_frame_array(stderr, ret_s);
+      }
+    }
+  }
+  return result;
+}
+
+int cpu_resolve_post_return_skip(uint16_t post_s) {
+  /* An interpreter tier-down entered at a rewritten return PC inside a
+   * compiled caller can execute that caller's RTS before returning to its
+   * generated callee.  Match the resulting S-after-return against strict
+   * host ancestors so the generated call chain skips every guest frame the
+   * interpreter already consumed. */
+  int top = g_recomp_stack_top;
+  if (top < 2 || top > RECOMP_STACK_DEPTH) return -1;
+  for (int i = top - 2; i >= 0; i--) {
+    uint16_t expected = (uint16_t)(g_cpu_entry_s[i] +
+                                   g_cpu_entry_return_frame[i]);
+    /* Same host-frame-vs-guest-frame conversion as the ancestor resolver:
+     * this feeds the identical SKIP_N decrement contract, so a tail-entered
+     * frame on the path inflates a raw count here too. Identical to the old
+     * (top-1)-i when no frame on the path was tail-entered. */
+    if (g_cpu_entry_s_valid[i] && expected == post_s)
+      return cpu_resolve_unwind_depth(i, top);
+  }
+  return -1;
+}
+
+// Function-boundary WRAM snapshot history (Phase B koopa-stomp).
+// When a TCP client sets g_recomp_snap_on_func to a non-NULL name,
+// every RecompStackPush whose name matches captures the LOW 8KB of
+// WRAM ($0000-$1FFF — DP + game-state region used by SMW for all
+// sprite/level/player state) into a ring buffer of 256 slots.
+//
+// Ring keeps the most recent 256 calls; older entries get overwritten.
+// Each slot has: absolute call index (the count at capture time),
+// frame number at capture, and the 8KB WRAM slice. Total: 256 × 8KB
+// = 2 MB per side. Fits comfortably; 256 calls ≈ 4 seconds at 60Hz
+// and ≈ 256 frames in SMW (one HandlePlayerPhysics call per frame).
+//
+// Probes use func_snap_get_n <call_idx> to fetch a specific historic
+// snapshot and bisect for the first diverging call.
+#define RECOMP_SNAP_SLICE_LEN  0x2000  /* $0000-$1FFF */
+#define RECOMP_SNAP_RING_LEN   256
+
+const char *g_recomp_snap_on_func = NULL;
+int        g_recomp_snap_count    = 0;     /* total calls observed */
+int        g_recomp_snap_frame    = -1;    /* most recent capture's frame */
+typedef struct {
+    int     call_idx;                       /* g_recomp_snap_count value at capture */
+    int     frame;
+    uint8_t wram_slice[RECOMP_SNAP_SLICE_LEN];
+} recomp_snap_entry;
+#if SNESRECOMP_FUNC_SNAPSHOT || SNESRECOMP_TRACE
+recomp_snap_entry g_recomp_snap_ring[RECOMP_SNAP_RING_LEN];
+#else
+recomp_snap_entry g_recomp_snap_ring[1];
+#endif
+
+/* Lookup an entry by absolute call index. Returns NULL if the index
+ * is out of the ring's current window. */
+const recomp_snap_entry* recomp_snap_lookup(int call_idx) {
+#if SNESRECOMP_FUNC_SNAPSHOT
+    if (call_idx < 1) return NULL;
+    int slot = (call_idx - 1) % RECOMP_SNAP_RING_LEN;
+    if (g_recomp_snap_ring[slot].call_idx != call_idx) return NULL;
+    return &g_recomp_snap_ring[slot];
+#else
+    (void)call_idx;
+    return NULL;
+#endif
+}
+
+/* Write-log scope: arm the shared write ring around the selected AOT body.
+ * SNESRECOMP_WLOG_FUNC_PREFIX overrides the historical
+ * "vram_payload_handler_M" default so the same first-divergence probe can be
+ * reused without rebuilding this file for every function. A zero-write
+ * scope (e.g. denied bounce) is not counted, keeping call indices aligned with
+ * a denied(interp) run. See cpu_state.c. */
+static int g_wlog_aot_slot = -1;
+
+static int wlog_func_matches(const char *name) {
+  static const char *prefix;
+  static size_t prefix_len;
+  static int initialized;
+  if (!initialized) {
+    prefix = getenv("SNESRECOMP_WLOG_FUNC_PREFIX");
+    if (!prefix || !*prefix) prefix = "vram_payload_handler_M";
+    prefix_len = strlen(prefix);
+    initialized = 1;
+  }
+  return name && strncmp(name, prefix, prefix_len) == 0;
+}
+
+void RecompStackDump(void);
+
+/* ── AOT host-time attribution sampler (cosim-only, env SNESRECOMP_AOT_PROF=1) ──
+ * Hooks RecompStackPush/Pop to attribute every host millisecond to the AOT
+ * function on top of the recomp stack. The frame end (called from the harness)
+ * attributes the tail, dumps the frame's top-N to stderr (windowed with
+ * SNESRECOMP_AOT_PROF_FROM/_TO), and resets the per-frame accumulators. This
+ * is how we see which generated function eats a whole guest frame (e.g. the
+ * ~8.4s boot frame, which runs 100% AOT / 0 interpreter steps). Compiles to
+ * nothing outside the cosim profile build. */
+#ifdef SNESRECOMP_INTERP_PROFILE
+#define AOTPROF_CAP 4096
+typedef struct { const char *name; double ms_frame; uint64_t calls_frame; } AotProfEntry;
+static AotProfEntry g_aotprof[AOTPROF_CAP];
+static clock_t g_aotprof_last_t;
+static int g_aotprof_on = -1;
+static long g_aotprof_from, g_aotprof_to;
+
+static void aotprof_latch_env(void) {
+  const char *e = getenv("SNESRECOMP_AOT_PROF");
+  g_aotprof_on = (e && e[0] && e[0] != '0') ? 1 : 0;
+  const char *f = getenv("SNESRECOMP_AOT_PROF_FROM");
+  g_aotprof_from = f ? atol(f) : 0;
+  const char *t = getenv("SNESRECOMP_AOT_PROF_TO");
+  g_aotprof_to = t ? atol(t) : 100000000L;
+  g_aotprof_last_t = clock();
+}
+
+static AotProfEntry *aotprof_find(const char *name) {
+  unsigned h = (unsigned)(((uintptr_t)name >> 4) & (AOTPROF_CAP - 1));
+  for (int i = 0; i < AOTPROF_CAP; i++) {
+    unsigned idx = (h + i) & (AOTPROF_CAP - 1);
+    if (g_aotprof[idx].name == name) return &g_aotprof[idx];
+    if (g_aotprof[idx].name == NULL) { g_aotprof[idx].name = name; return &g_aotprof[idx]; }
+  }
+  return NULL;
+}
+
+static void aotprof_attr(const char *name, double dms) {
+  if (dms <= 0.0) return;
+  AotProfEntry *e = aotprof_find(name ? name : "(root)");
+  if (!e) return;
+  e->ms_frame += dms;
+  e->calls_frame++;
+}
+
+void aot_prof_frame_end(int frame) {
+  if (g_aotprof_on < 0) aotprof_latch_env();
+  if (g_aotprof_on != 1) return;
+  {
+    clock_t now = clock();
+    double d = 1000.0 * (double)(now - g_aotprof_last_t) / CLOCKS_PER_SEC;
+    const char *top = g_recomp_stack_top > 0 ? g_recomp_stack[g_recomp_stack_top - 1] : "(root)";
+    aotprof_attr(top, d);
+    g_aotprof_last_t = now;
+  }
+  if (frame >= g_aotprof_from && frame <= g_aotprof_to) {
+    static AotProfEntry *top[32];
+    int n = 0;
+    double total = 0.0;
+    for (int i = 0; i < AOTPROF_CAP && n < 32; i++)
+      if (g_aotprof[i].name && g_aotprof[i].ms_frame > 0.05) {
+        top[n++] = &g_aotprof[i];
+        total += g_aotprof[i].ms_frame;
+      }
+    for (int a = 0; a < n; a++) {
+      int best = a;
+      for (int b = a + 1; b < n; b++)
+        if (top[b]->ms_frame > top[best]->ms_frame) best = b;
+      AotProfEntry *t = top[a]; top[a] = top[best]; top[best] = t;
+    }
+    fprintf(stderr, "[aotprof] frame %d: %.0f ms attributed, top %d:\n", frame, total, n);
+    for (int i = 0; i < n; i++)
+      fprintf(stderr, "  %8.1f ms  %7llu calls  %s\n",
+              top[i]->ms_frame, (unsigned long long)top[i]->calls_frame,
+              top[i]->name ? top[i]->name : "?");
+    fflush(stderr);
+  }
+  for (int i = 0; i < AOTPROF_CAP; i++) {
+    g_aotprof[i].ms_frame = 0.0;
+    g_aotprof[i].calls_frame = 0;
+  }
+}
+#endif /* SNESRECOMP_INTERP_PROFILE */
+
+void RecompStackPushInterpreter(const char *name) {
+  const int slot = g_recomp_stack_top;
+  RecompStackPush(name);
+  /* The diagnostic scope can start below its enclosing function's entry S
+   * (PHB; PEA; JMP is one example). An AOT helper's non-local RTS can land
+   * exactly at this seed while still inside the interpreted continuation.
+   * Treating it as a compiled ancestor loses the popped return PC and resumes
+   * after the wrong JSR. The bridge owns that continuation, not SKIP_N. */
+  if (slot < RECOMP_STACK_DEPTH)
+    g_cpu_entry_s_valid[slot] = 0;
+}
+
+void RecompStackPush(const char *name) {
+#ifdef SNESRECOMP_INTERP_PROFILE
+  if (g_aotprof_on < 0) aotprof_latch_env();
+  if (g_aotprof_on == 1) {
+    clock_t now = clock();
+    double d = 1000.0 * (double)(now - g_aotprof_last_t) / CLOCKS_PER_SEC;
+    const char *top = g_recomp_stack_top > 0 ? g_recomp_stack[g_recomp_stack_top - 1] : "(root)";
+    aotprof_attr(top, d);
+    g_aotprof_last_t = now;
+  }
+#endif
+  if (g_recomp_stack_top < RECOMP_STACK_DEPTH) {
+    int slot = g_recomp_stack_top++;
+    g_recomp_stack[slot] = name;
+    if (g_wlog_aot_slot < 0 && g_wlog_configured != 0 &&
+        wlog_scope_available() &&
+        wlog_func_matches(name)) {
+      g_wlog_aot_slot = slot;
+      wlog_scope_enter(name);
+    }
+    g_cpu_entry_return_frame[slot] =
+        (g_cpu.host_return_valid == 2 || g_cpu.host_return_valid == 3)
+            ? g_cpu.host_return_valid
+            : 0;
+    /* Seed the entry-S baseline HERE, not only in the generated prologue.
+     *
+     * The prologue's `g_cpu_entry_s[g_recomp_stack_top-1] = _entry_s` runs
+     * AFTER the two early-exit yield checks (master deadline, in-LLE-
+     * scheduler), and both of those call RecompStackPop() on the way out. So
+     * for that window the slot still held whatever an unrelated earlier call
+     * at the same depth left there, and the auditor differenced live S against
+     * a stranger's baseline. That is where bank_07_8004_M0X0's
+     * "total_delta +7866, calls 23, nonzero 23" came from -- and the ~+4000
+     * magnitudes on the interp@ entries, which are two unrelated stack
+     * pointers subtracted, not drift.
+     *
+     * HLE forwarding stubs explicitly invalidate this seed through
+     * cpu_take_tailcall_return_context(NULL, NULL), before they can call a
+     * helper that bounces into the interpreter. */
+    g_cpu_entry_s[slot] = g_cpu.S;
+    g_cpu_entry_s_valid[slot] = 1;
+    g_cpu_entry_tailcall[slot] = 0;  /* set only if this prologue adopts a
+                                      * tailcall return context (below) */
+  } else if (getenv("SNESRECOMP_STACK_CAP_ABORT")) {
+    /* Diagnostic-only: stop at the first host-call-depth overflow while the
+     * bounded attribution stack still contains the causal chain.  Letting C
+     * recursion continue loses that evidence to Windows 0xC00000FD. */
+    fprintf(stderr, "\n[recomp-stack-cap] next=%s depth=%d\n",
+            name ? name : "(null)", g_recomp_stack_top);
+    RecompStackDump();
+    fflush(stderr);
+    abort();
+  }
+  g_last_recomp_func = name;
+  debug_server_profile_push(name);
+  // Boundary auditor (always-on; no-op when SNESRECOMP_TRACE=0).
+  // Recorded AFTER the stack push so stack_depth reflects post-push state.
+  boundary_audit_record_entry(name);
+  // Function-boundary snapshot: if a client set a target function
+  // name, and this push matches it, capture WRAM. Frame execution
+  // continues afterward — no longjmp. Compare the snapshot at
+  // matching points across recomp + oracle for sub-frame-precise
+  // state diff regardless of NMI ordering.
+#if SNESRECOMP_FUNC_SNAPSHOT
+  if (g_recomp_snap_on_func) {
+    extern int snes_frame_counter;
+    int match;
+    if (name == g_recomp_snap_on_func) match = 1;
+    else if (strcmp(g_recomp_snap_on_func, name) == 0) {
+      g_recomp_snap_on_func = name;  /* cache pointer for fast path */
+      match = 1;
+    } else {
+      match = 0;
+    }
+    if (match) {
+      g_recomp_snap_count++;
+      g_recomp_snap_frame = snes_frame_counter;
+      int slot = (g_recomp_snap_count - 1) % RECOMP_SNAP_RING_LEN;
+      g_recomp_snap_ring[slot].call_idx = g_recomp_snap_count;
+      g_recomp_snap_ring[slot].frame    = snes_frame_counter;
+      memcpy(g_recomp_snap_ring[slot].wram_slice, g_ram, RECOMP_SNAP_SLICE_LEN);
+    }
+  }
+#endif
+}
+
+void RecompStackDump(void) {
+  fprintf(stderr, "Recomp call stack (%d deep):\n", g_recomp_stack_top);
+  for (int i = g_recomp_stack_top - 1; i >= 0 && i >= g_recomp_stack_top - RECOMP_STACK_DEPTH; i--)
+    fprintf(stderr, "  [%d] %s\n", g_recomp_stack_top - 1 - i, g_recomp_stack[i]);
+}
+
+/* ── Always-on stack-balance auditor ──────────────────────────────────────
+ * JSL/JSR/RTS/RTL are 0-delta in the codegen (their hardware frame is NOT
+ * pushed onto cpu->S — only explicit push/pull move it). So a correctly
+ * recompiled function returns with cpu->S == its entry S. A persistent net
+ * delta means an unbalanced push/pull on the taken exit path (e.g. a
+ * PHP/PHA/PHX/PHY prologue whose matching pulls are skipped by a mis-routed
+ * early exit). We accumulate net delta per function name (pointer-keyed —
+ * the generated code passes interned string literals) so a per-frame leaker
+ * stands out by sheer magnitude. Optional in production; dumped by the
+ * watchdog/crash path and the post-mortem report when enabled. */
+#define STACKBAL_MAX 2048
+typedef struct {
+  const char *name;
+  long long   total_delta;  /* sum of (exit_s - entry_s) across all returns */
+  long        calls;
+  long        nonzero;      /* # returns with a nonzero delta */
+  long        yields;       /* # exits via an LLE yield unwind (not balanced) */
+  int         last_delta;
+} StackBalEntry;
+#if SNESRECOMP_STACK_BALANCE_DIAGNOSTICS
+static StackBalEntry g_stackbal[STACKBAL_MAX];
+
+static StackBalEntry *stackbal_find(const char *name) {
+  unsigned h = (unsigned)(((uintptr_t)name >> 4) & (STACKBAL_MAX - 1));
+  for (int i = 0; i < STACKBAL_MAX; i++) {
+    unsigned idx = (h + i) & (STACKBAL_MAX - 1);
+    if (g_stackbal[idx].name == name) return &g_stackbal[idx];
+    if (g_stackbal[idx].name == NULL) { g_stackbal[idx].name = name; return &g_stackbal[idx]; }
+  }
+  return NULL; /* table full — drop */
+}
+#endif
+
+/* Comparator helper: collect non-zero-delta entries into `out`, return count. */
+static int stackbal_collect(StackBalEntry **out, int cap) {
+#if SNESRECOMP_STACK_BALANCE_DIAGNOSTICS
+  int n = 0;
+  for (int i = 0; i < STACKBAL_MAX && n < cap; i++)
+    if (g_stackbal[i].name && g_stackbal[i].total_delta != 0)
+      out[n++] = &g_stackbal[i];
+  /* simple selection sort by |total_delta| desc (n is small) */
+  for (int a = 0; a < n; a++) {
+    int best = a;
+    for (int b = a + 1; b < n; b++)
+      if (llabs(out[b]->total_delta) > llabs(out[best]->total_delta)) best = b;
+    StackBalEntry *t = out[a]; out[a] = out[best]; out[best] = t;
+  }
+  return n;
+#else
+  (void)out;
+  (void)cap;
+  return 0;
+#endif
+}
+
+void RecompStackBalDumpStderr(int topn) {
+  StackBalEntry *top[64];
+  if (topn > 64) topn = 64;
+  int n = stackbal_collect(top, topn);
+#if SNESRECOMP_STACK_BALANCE_DIAGNOSTICS
+  fprintf(stderr, "=== stack-balance auditor: top %d net-imbalanced funcs ===\n", n);
+  for (int i = 0; i < n; i++)
+    fprintf(stderr,
+            "  %+lld bytes net over %ld calls (%ld nonzero, %ld yielded, last %+d): %s\n",
+            top[i]->total_delta, top[i]->calls, top[i]->nonzero,
+            top[i]->yields, top[i]->last_delta,
+            top[i]->name ? top[i]->name : "?");
+#else
+  (void)n;
+  fprintf(stderr, "=== stack-balance auditor: disabled ===\n");
+#endif
+  fflush(stderr);
+}
+
+void RecompStackBalDumpJson(FILE *f) {
+  StackBalEntry *top[64];
+  int n = stackbal_collect(top, 40);
+#if SNESRECOMP_STACK_BALANCE_DIAGNOSTICS
+  fprintf(f, "  \"stack_balance\": [");
+  for (int i = 0; i < n; i++)
+    fprintf(f, "%s{\"name\":\"%s\",\"total_delta\":%lld,\"calls\":%ld,"
+               "\"nonzero\":%ld,\"yields\":%ld,\"last_delta\":%d}",
+            (i ? "," : ""), top[i]->name ? top[i]->name : "?",
+            top[i]->total_delta, top[i]->calls, top[i]->nonzero, top[i]->yields,
+            top[i]->last_delta);
+  fprintf(f, "],\n");
+#else
+  (void)n;
+  fprintf(f, "  \"stack_balance\": [],\n");
+  fprintf(f, "  \"stack_balance_disabled\": true,\n");
+#endif
+}
+
+/* audit != 0: this exit is a real return, so the guest stack effect is
+ * complete and (exit_s - entry_s) is a meaningful balance figure.
+ * audit == 0: this exit is an LLE yield unwind — see RecompStackPopYield. */
+static void recomp_stack_pop_common(int audit) {
+  (void)audit; /* Only used when stack-balance diagnostics are compiled in. */
+#ifdef SNESRECOMP_INTERP_PROFILE
+  if (g_aotprof_on < 0) aotprof_latch_env();
+  if (g_aotprof_on == 1) {
+    clock_t now = clock();
+    double d = 1000.0 * (double)(now - g_aotprof_last_t) / CLOCKS_PER_SEC;
+    const char *fn = g_recomp_stack_top > 0 ? g_recomp_stack[g_recomp_stack_top - 1] : "(none)";
+    aotprof_attr(fn, d);
+    g_aotprof_last_t = now;
+  }
+#endif
+  // Record exit BEFORE the pop so stack_depth reflects pre-pop state and
+  // the function name is still the topmost entry. Defensive against
+  // empty stack: the auditor must NOT consume an entry_seq it didn't push.
+  if (g_recomp_stack_top > 0) {
+    const char *fn = g_recomp_stack[g_recomp_stack_top - 1];
+#if SNESRECOMP_STACK_BALANCE_DIAGNOSTICS
+    int slot = g_recomp_stack_top - 1;
+    if (audit) {
+      int delta = (int)(int16_t)(g_cpu.S - g_cpu_entry_s[slot]) -
+                  (int)g_cpu_entry_return_frame[slot];
+      StackBalEntry *e = stackbal_find(fn);
+      if (e) {
+        e->calls++;
+        if (delta) { e->total_delta += delta; e->nonzero++; e->last_delta = delta; }
+      }
+    } else {
+      StackBalEntry *e = stackbal_find(fn);
+      if (e) e->yields++;
+    }
+#else
+    (void)fn;
+#endif
+    boundary_audit_record_exit(g_recomp_stack[g_recomp_stack_top - 1]);
+    if (g_wlog_aot_slot == g_recomp_stack_top - 1) {
+      wlog_scope_exit();
+      g_wlog_aot_slot = -1;
+    }
+    g_recomp_stack_top--;
+  }
+  g_last_recomp_func = g_recomp_stack_top > 0 ? g_recomp_stack[g_recomp_stack_top - 1] : "(none)";
+}
+
+void RecompStackPop(void) { recomp_stack_pop_common(1); }
+
+/* Pop for an LLE yield unwind (interp_bridge_lle_yield_unwind).
+ *
+ * The frame is NOT finished: the bounce site resumes the INTERPRETER at
+ * resume_pc24 "with cpu exactly as the compiled callsite left it"
+ * (cpu_state.h), and the interpreter runs the rest of the routine —
+ * including the pops matching any PHP/PHA this frame already executed. So
+ * (S - entry_s) at a yield is mid-flight by construction, not an imbalance,
+ * and folding it into total_delta manufactures an offender.
+ *
+ * That is what happened to $07:8004, the SPC700 upload routine: it is a PHP
+ * entry wrapped around unbounded `CMP $2140 / BNE` MMIO spins, so it yields
+ * on nearly every call with pushed state live. The auditor read
+ * "total_delta +7866, calls 23, nonzero 23" and recomp/bank07.cfg cited
+ * that as proof the native ABI could not represent the routine —
+ * force_lle'ing it, which prunes decode through the boot call chain and
+ * costs 1563 exact AOT variants down to 34.
+ *
+ * Yields are counted separately so "how often does this frame leave through
+ * a yield" stays visible without contaminating the balance figure. */
+void RecompStackPopYield(void) { recomp_stack_pop_common(0); }
+
+// Frame watchdog: detect infinite loops in generated code.
+// Set before calling run_frame, checked by generated code periodically.
+static clock_t g_frame_start_clock;
+static int g_watchdog_enabled;
+static int g_watchdog_counter;
+jmp_buf g_watchdog_jmp;
+int g_watchdog_tripped;
+
+void WatchdogFrameStart(void) {
+  g_frame_start_clock = clock();
+  g_watchdog_enabled = 1;
+  g_watchdog_tripped = 0;
+  g_watchdog_counter = 0;
+  g_recomp_stack_top = 0;
+  g_tailcall_context_valid = 0;
+  g_interrupt_context_depth = 0;
+}
+
+/* ── DRAM refresh ──
+ * Hardware stalls the CPU ~40 master clocks once per scanline, vblank
+ * included — a ~2.9% tax on execution this runtime never paid. Unpaid, a
+ * scene load completes its lag blocks early (measured 33/46/32 frames vs
+ * Mesen's 36/47/35 before this and the DMA-time charge), shifting the parity
+ * of the pass that spawns objects; the sprite hover (gated on the pass
+ * counter) then pairs with the wrong animation phase and publishes sprite
+ * tables hardware never shows.
+ *
+ * One watermark serves both tiers: generated code charges from
+ * WatchdogCheck() per block, the interpreter from its per-opcode advance.
+ * The park path (idle-spin skip) exempts its own jumps — parked time
+ * displaces no work, and taxing it would drift IRQ latch points. A jump of
+ * more than 4096 lines is treated as a teleport (boot, savestate load) and
+ * exempted rather than charged. */
+uint64_t g_refresh_charged_upto;
+static uint64_t s_refresh_phase;
+void snes_refresh_exempt(void) { g_refresh_charged_upto = g_cpu.master_cycles; }
+void snes_refresh_charge(void) {
+  uint64_t m = g_cpu.master_cycles;
+  if (g_refresh_charged_upto == 0 || m < g_refresh_charged_upto) {
+    g_refresh_charged_upto = m;
+    return;
+  }
+  uint64_t delta = m - g_refresh_charged_upto;
+  s_refresh_phase += delta;
+  uint64_t lines = s_refresh_phase / 1364u;
+  if (lines > 4096u) {            /* teleport, not execution */
+    s_refresh_phase = 0;
+    g_refresh_charged_upto = m;
+    return;
+  }
+  if (lines) {
+    s_refresh_phase -= lines * 1364u;
+    g_cpu.master_cycles += 40u * lines;
+  }
+  g_refresh_charged_upto = g_cpu.master_cycles;
+}
+
+/*
+ * Rollback accessors. s_refresh_phase is the sub-scanline remainder and
+ * g_refresh_charged_upto the high-water mark; together they decide how much
+ * refresh tax the next block pays. Neither is in snes_saveload — they are host
+ * accounting, not guest memory — so a rewind used to leave them holding the
+ * discarded timeline's phase and the replayed frame was charged a different
+ * number of cycles than the frame it replaced. Measured as hPos,
+ * apuCatchupCycles and autoJoyTimer diverging on the first replayed tick with
+ * guest memory byte-identical, both offline and across a real Linux/Windows
+ * match (RB POST FORK on episode #1, same digests every run).
+ */
+void snes_refresh_state_get(uint64_t *phase, uint64_t *charged_upto) {
+  if (phase) *phase = s_refresh_phase;
+  if (charged_upto) *charged_upto = g_refresh_charged_upto;
+}
+
+void snes_refresh_state_set(uint64_t phase, uint64_t charged_upto) {
+  s_refresh_phase = phase;
+  g_refresh_charged_upto = charged_upto;
+}
+
+// Called at loop headers in generated code — detect infinite loops
+void WatchdogCheck(void) {
+  snes_refresh_charge();
+#ifdef SNES_COSIM
+  /* Co-sim WRAM watchpoint (dev, env-gated): name the recompiled function that
+   * writes a given low-WRAM address. WatchdogCheck runs per-block with
+   * g_last_recomp_func = the live current function, so a change first observed
+   * here is attributed to the function whose block just ran. Set
+   * SNESRECOMP_WRAM_WATCH=0xADDR (e.g. 0x02fa). Zero cost when unset. */
+  {
+    static int watch = -2;          /* -2 unresolved, -1 off, else addr */
+    static uint8_t last; static int primed = 0; static int hits = 0;
+    static FILE *wlog = NULL;
+    if (watch == -2) {
+      const char *e = getenv("SNESRECOMP_WRAM_WATCH");
+      watch = (e && e[0]) ? (int)strtol(e, NULL, 0) : -1;
+      if (watch >= 0) {
+        const char *lp = getenv("SNESRECOMP_WRAM_WATCH_LOG");
+        wlog = fopen(lp && lp[0] ? lp : "wramwatch.log", "w");
+        if (wlog) { fprintf(wlog, "[wramwatch] armed on $%04x\n", watch); fflush(wlog); }
+      }
+    }
+    if (watch >= 0 && wlog) {
+      uint8_t v = g_ram[watch];
+      if (!primed) {
+        last = v; primed = 1;
+        fprintf(wlog, "[wramwatch] primed f%d $%04x = %02x  (at %s)\n",
+                snes_frame_counter, watch, v, g_last_recomp_func); fflush(wlog);
+      } else if (v != last) {
+        if (hits < 300) {
+          fprintf(wlog, "[wramwatch] f%d $%04x: %02x -> %02x  by %s  (m=%d x=%d)\n",
+                  snes_frame_counter, watch, last, v, g_last_recomp_func,
+                  g_cpu.m_flag & 1, g_cpu.x_flag & 1);
+          fflush(wlog);
+        }
+        hits++; last = v;
+      }
+    }
+  }
+#endif
+  /* Boot-spin observability. During boot (frame 0) the normal frame
+   * watchdog is disabled below (the SPC IPL upload is legitimately slow,
+   * real-time paced by the audio thread). But a genuine boot spin
+   * (I_RESET never reaching the first WaitForNMI yield) otherwise hangs
+   * SILENTLY: the host's SwitchToFiber never returns, the window goes
+   * black + "Not Responding", and frame_counter stays 0 forever so the
+   * frame watchdog never arms. Sample the live recomp call stack at
+   * intervals during boot so (a) a true spin's location is named and
+   * (b) a slow-but-progressing upload (stack CHANGES between samples) is
+   * distinguishable from a real spin (stack IDENTICAL). Pure sampling:
+   * no longjmp (the boot fiber has no valid g_watchdog_jmp setjmp frame)
+   * and no abort, so a healthy slow boot is never disturbed — once the
+   * first NMI bumps frame_counter past 0 this whole branch goes dormant.
+   * Tunable via SNESRECOMP_BOOT_WATCHDOG_SECS (default: first sample at
+   * 8 s, then every 3 s). Shared across every game's bring-up. */
+  if (snes_frame_counter == 0) {
+#if SNESRECOMP_BOOT_WATCHDOG_DIAGNOSTICS
+    static long    boot_calls = 0;
+    static clock_t boot_first = 0, boot_last_print = 0;
+    static double  boot_first_secs = -1.0;
+    if (boot_first == 0) boot_first = clock();
+    if (++boot_calls % 2000 != 0) return;   /* throttle clock() reads */
+    if (boot_first_secs < 0.0) {
+      const char *e = getenv("SNESRECOMP_BOOT_WATCHDOG_SECS");
+      boot_first_secs = e ? atof(e) : 8.0;
+    }
+    clock_t now = clock();
+    double since_start = (double)(now - boot_first) / CLOCKS_PER_SEC;
+    double since_print = (double)(now - boot_last_print) / CLOCKS_PER_SEC;
+    if (since_start > boot_first_secs && since_print > 3.0) {
+      boot_last_print = now;
+      fprintf(stderr,
+        "[boot-watchdog] %.1fs in boot (frame 0); recomp depth=%d, "
+        "top=%s\n", since_start, g_recomp_stack_top,
+        g_recomp_stack_top > 0 ? g_recomp_stack[g_recomp_stack_top - 1]
+                               : (g_last_recomp_func ? g_last_recomp_func
+                                                     : "(none)"));
+      for (int i = g_recomp_stack_top - 1, n = 0; i >= 0 && n < 16; i--, n++)
+        fprintf(stderr, "    [%d] %s\n", n, g_recomp_stack[i]);
+      fflush(stderr);
+    }
+#endif
+    return;
+  }
+  if (!g_watchdog_enabled) return;
+  // Only check clock() every 10000 iterations to avoid overhead
+  if (++g_watchdog_counter < 10000) return;
+  g_watchdog_counter = 0;
+  double elapsed = (double)(clock() - g_frame_start_clock) / CLOCKS_PER_SEC;
+  /* Boot has no watchdog. I_RESET runs once and uploads the SPC
+   * engine + samples through the IPL handshake, which is real-time
+   * paced by the audio thread (the SPC bootROM can only echo bytes
+   * at ~1 MHz). For SMW the upload is ~12 KB and naturally takes
+   * tens of seconds wall time; that's expected, not a hang. After
+   * I_RESET returns the runtime falls into the normal per-frame
+   * cadence (I_NMI + Internal) which completes comfortably under 5 s.
+   *
+   * Detecting "still in boot" via snes_frame_counter == 0 is robust:
+   * the recompiled NMI handler increments snes_frame_counter, and
+   * the very first NMI only fires after I_RESET returns and frame 1
+   * starts. */
+  if (snes_frame_counter == 0) return;
+  if (elapsed > 5.0) {
+    fprintf(stderr,
+      "\n=== WATCHDOG: Frame %d exceeded %.1fs ===\n"
+      "Game mode: %d | WatchdogCheck calls: %d\n"
+      "Call stack (most recent first):\n",
+      snes_frame_counter, elapsed, g_ram[0x100], g_watchdog_counter * 10000);
+    for (int i = g_recomp_stack_top - 1; i >= 0; i--)
+      fprintf(stderr, "  [%d] %s\n", g_recomp_stack_top - 1 - i, g_recomp_stack[i]);
+    if (g_recomp_stack_top == 0)
+      fprintf(stderr, "  (empty — last was %s)\n", g_last_recomp_func);
+    fprintf(stderr, "\n");
+    RecompStackBalDumpStderr(15);
+    fflush(stderr);
+    g_watchdog_enabled = 0;
+    g_watchdog_tripped = 1;
+    { extern int snes_frame_counter;
+      debug_server_profile_latch(snes_frame_counter); }
+    longjmp(g_watchdog_jmp, 1);
+  }
+}
+
+Snes *SnesInit(const uint8 *data, int data_size) {
+#if defined(SNESRECOMP_SETUP_HOST)
+  /* A setup host carries no recompiled code (runner.cmake,
+   * snesrecomp_target_generated_code). Booting a guest here would run every
+   * instruction through the interpreter tier with nothing to hand off to --
+   * a build that "works" by never being the product. Refuse, and say what the
+   * player should do instead. Die() is the host's fatal path: the GUI
+   * launcher shows it, a console host prints it. */
+  (void)data;
+  (void)data_size;
+  Die("This is a setup build with no recompiled game code.\n"
+      "Start it with --launcher and use \"Generate & rebuild\" with your own "
+      "ROM; the rebuilt executable in build/ is the playable one.");
+  return NULL;
+#else
+  g_snes = snes_init(g_ram);
+  snes_set_master_clock_charge_hook(rtl_snes_charge_master_cycles);
+  snes_set_wram_write_log_hook(wlog_addr_note_direct);
+  /* The CpuState's WRAM pointer is host state, not simulation state: no reset
+   * path sets it, and a CpuState that never had it dereferences NULL on the
+   * first guest stack push (interp816_pushByte -> cpu_write8 -> cpu->ram[off])
+   * or the first WRAM read. Every port used to wire this itself from its
+   * initialize hook -- Endless Duel and Metal Warriors do -- and every port
+   * that did not crashed on frame 1 (a fresh scaffold: SIGSEGV in cpu_read8
+   * with rax = 0). The machine is being built here; the pointer belongs here.
+   * A port's own cpu_state_init() in its initialize hook, below, is harmless
+   * -- same call, same moment, before snes_reset(). */
+  cpu_state_init(&g_cpu, g_ram);
+  cart_set_master_clock_source(g_snes->cart,
+                               &g_cpu.coprocessor_master_cycles);
+  g_snes_cpu = g_snes->cpu;
+  g_dma = g_snes->dma;
+  g_ppu = g_snes->ppu;
+  audio_trace_set_beam_probe(snes_beam_probe_for_audio_trace);
+
+  if (data_size != 0) {
+    bool loaded = snes_loadRom(g_snes, data, data_size);
+    if (!loaded) {
+      return NULL;
+    }
+    g_rom = g_snes->cart->rom;
+    {
+      tier2_capture_set_entry_probe(cpu_dispatch_entry_reason);
+      tier2_capture_set_checkpoint_hook(rtl_write_tier2_coverage_manifest);
+      static int capture_exit_registered;
+      if (!capture_exit_registered) { atexit(rtl_write_tier2_coverage_manifest); capture_exit_registered = 1; }
+      Tier2CoverageReset(); /* seal the previous image before replacing identity */
+      uint8_t digest[32];
+      char hex[65];
+      /* Coverage is keyed to the generator's headerless input image, not
+       * the bus allocation (e.g. a 3 MiB ROM mirrored to 4 MiB). */
+      sha256_compute(g_rom, g_snes->cart->romImageSize, digest);
+      for (unsigned i = 0; i < 32; ++i) snprintf(hex + 2*i, 3, "%02x", digest[i]);
+      const SnesProgramModule *module = snes_program_module_active();
+      if (!module) module = snes_program_module_find("main");
+      static const char *mappers[] = {"unknown","lorom","hirom","superfx","cx4",
+                                     "dsp1","dsp1_hirom","sa1","sdd1"};
+      unsigned type = g_snes->cart->type;
+      tier2_capture_set_identity(hex, module ? module->id : "main",
+          module ? module->program_digest : "",
+          type < sizeof mappers/sizeof *mappers ? mappers[type] : "unknown");
+      tier2_capture_set_build_digest(module ? module->build_digest : "");
+    }
+
+    assert(g_rtl_game_info && "RtlRegisterGame must be called before SnesInit");
+
+    if (g_rtl_game_info->initialize)
+      g_rtl_game_info->initialize();
+    snes_reset(g_snes, true); // reset after loading
+    /* The machine is new; the HOST-SIDE pacing that drives it must be too.
+     *
+     * snes_reset clears the guest (WRAM included). It does not touch the frame
+     * counter or the APU pacing anchors, which live in the runtime and outlive
+     * any one Snes -- so a rematch re-entered through SnesInit inherited the
+     * previous session's counter and anchors. The APU was then caught up by a
+     * different number of cycles than on a first boot, the CPU read different
+     * values from its ports while booting, and the two peers' WRAM and APU
+     * digests came out different at tick 0 -- a rematch that could never start
+     * even with nobody touching anything.
+     *
+     * RtlReset (the soft-reset path) has always done this. SnesInit is the
+     * other way into a fresh machine and has to agree with it: two entry
+     * points must not disagree about what "cold boot" means. */
+    rtl_reset_host_pacing();
+    g_snes->beamMasterLast = g_cpu.master_cycles;
+    SnesEnterNativeMode();
+  } else {
+    g_snes->cart->ramSize = 2048;
+    g_snes->cart->ram = calloc(1, 2048);
+    assert(g_rtl_game_info && "RtlRegisterGame must be called before SnesInit");
+    if (g_rtl_game_info->initialize)
+      g_rtl_game_info->initialize();
+    ppu_reset(g_snes->ppu);
+    dma_reset(g_snes->dma);
+  }
+
+  g_sram = g_snes->cart->ram;
+  g_sram_size = g_snes->cart->ramSize;
+  return g_snes;
+#endif /* SNESRECOMP_SETUP_HOST */
+}

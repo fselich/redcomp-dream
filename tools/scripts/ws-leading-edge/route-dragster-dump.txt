@@ -1,0 +1,16 @@
+# Dragster 1P, then accelerate right through the race.
+wait 640
+press b 2
+wait 180
+press b 2
+wait 180
+press b 2
+wait 180
+press b 2
+wait 180
+press b 2
+wait 360
+press right 1000
+wait 20
+dump dragster-race
+press right 3000

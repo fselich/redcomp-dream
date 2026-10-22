@@ -1,0 +1,96 @@
+[host +0.000s] host_report: Uniracers 0.1.0
+[cpu_trace] ring allocated: 16777216 entries (~640 MB)
+[boundary_audit] ring allocated: 1048576 entries (~88 MB)
+[gm14_trace] ring allocated: 131072 entries (~6 MB)
+[cpu_trace] WRAM-watch ARMED slot=0 $7E:008C off=0008C any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=1 $7E:008A off=0008A any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=2 $7E:008B off=0008B any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=3 $7E:0100 off=00100 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=4 $7E:0101 off=00101 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=5 $7E:0102 off=00102 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=6 $7E:0103 off=00103 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=7 $7E:0104 off=00104 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=8 $7E:0105 off=00105 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=9 $7E:0106 off=00106 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=10 $7E:0107 off=00107 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=11 $7E:0108 off=00108 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=12 $7E:0109 off=00109 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=13 $7E:010A off=0010A any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=14 $7E:010B off=0010B any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=15 $7E:010C off=0010C any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=16 $7E:010D off=0010D any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=17 $7E:010E off=0010E any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=18 $7E:010F off=0010F any00 width=1
+[cpu_trace] default watches armed: PB!=0, S out-of-$01XX-$1FFF, GameMode14_InLevel_0086DF, WRAM recorders on $7E:008A/8B/8C (DB-poison auto-watch off; SNESRECOMP_DB_POISON_WATCH=1 to enable)
+[cpu_trace] P.X tripwire armed (first 1→0 transition caught)
+[cpu_trace] DB tripwire armed (first transition to $C0)
+[cpu_trace] phantom-PC trap armed for 11 SMC-phantom sites
+[cpu_trace] phantom-PC trap now covers 20 total sites (SMC + unresolvable-goto)
+[cpu_trace] static M/X claim verifier armed
+[cpu_trace] async M/X flag-write tripwire armed
+[cpu_trace] scoped tripwire armed on $7E:1930 (match_val=$FA)
+[cpu_trace] reg_trace + dma_tripwire + wram_trace armed at boot
+[cpu_trace] WRAM-watch ARMED slot=19 $7E:1925 off=01925 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=20 $7E:1926 off=01926 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=21 $7E:1927 off=01927 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=22 $7E:1928 off=01928 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=23 $7E:1929 off=01929 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=24 $7E:192A off=0192A any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=25 $7E:192B off=0192B any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=26 $7E:192C off=0192C any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=27 $7E:192D off=0192D any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=28 $7E:192E off=0192E any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=29 $7E:192F off=0192F any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=30 $7E:1930 off=01930 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=31 $7E:0032 off=00032 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=32 $7E:0033 off=00033 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=33 $7E:0042 off=00042 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=34 $7E:0043 off=00043 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=35 $7E:0052 off=00052 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=36 $7E:0053 off=00053 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=37 $7E:0062 off=00062 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=38 $7E:0063 off=00063 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=39 $7E:0072 off=00072 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=40 $7E:0073 off=00073 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=41 $7E:0082 off=00082 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=42 $7E:0083 off=00083 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=43 $7E:0092 off=00092 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=44 $7E:0093 off=00093 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=45 $7E:00A2 off=000A2 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=46 $7E:00A3 off=000A3 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=47 $7E:00A4 off=000A4 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=48 $7E:00A5 off=000A5 any00 width=1
+[cpu_trace] WRAM-watch ARMED slot=49 $7E:00A6 off=000A6 any00 width=1
+[Launcher] Config/saves anchored to '<workshop>/work/ws-native-map-spike/project/UniracersSNESRecomp/build-local/'.
+[host +0.000s] config dir anchored: <workshop>/work/ws-native-map-spike/project/UniracersSNESRecomp/build-local (exe-dir anchor: ok)
+[host +0.000s] config parsed: output=0 new_renderer=1 scale=3 fullscreen=1 audio=1 freq=32000 samples=512
+[Launcher] ROM: <workshop>/Uniracers (USA).sfc
+[host +0.024s] rom resolved: <workshop>/Uniracers (USA).sfc
+[debug_server] OAM rings: write 524288 entries (~32 MB), render 256 snaps (~196 KB)
+[debug_server] VRAM rings allocated: 8388608 entries each (recomp ~1280 MB, oracle ~64 MB)
+[debug_server] Listening on port 9971 (threaded)
+[main] Debug server ready on port 9971
+[host +0.037s] SDL init ok: video=dummy audio=dummy
+[Keybinds] Loaded ./keybinds.ini
+[host +0.038s] rom loaded: 2097152 bytes
+[snes_load] name=UNIRACERS             coproc=0 chips=2 maker=01 -> cartType=1
+[host +0.046s] SnesInit: ok
+[host +0.046s] window created: 960x720 flags=0x21
+[host +0.047s] renderer initialized: sdl
+[host +0.047s] audio outputs: 1 device(s)
+[host +0.047s] audio output[0]: System audio playback device
+[host +0.047s] audio device opened: freq=32000 (want 32000) ch=2 samples=512 frames_per_block=533
+[Gamepad] SDL reports 0 joystick(s). enable_gamepad=[0,0,0,0,0]
+[Gamepad] No joysticks detected. On Windows, plug controller in BEFORE launching, or check that XInput drivers are installed.
+script: loaded 5 entries from '<workshop>/work/ws-native-map-spike/scripts/route-dragster.txt'
+[snes_rewind] 60 snapshots every 6 frames (6.0s of history)
+[host +0.047s] entering main loop
+[host +0.050s] first audio callback (len=2972)
+[host +0.051s] first frame simulated
+[snes_rewind] snapshot is 305603 bytes; ring is 17.5 MB
+[debug_server] Client connected
+[mx_async] FIRED frame=1525 block=$8185BB func=Race_8185BB_M0X1 flags (0,0)->(0,1) px_count=126 (no emit between checkpoints)
+[debug_server] Client disconnected
+[host +29.636s] exit: SDL_QUIT event after 1776 frames
+[host +29.636s] video totals: simulations=1776 presentations=1776 seconds=29.588
+[host +29.636s] frame service: implementation=LLE seconds=29.588444542 fps=60.023 cpu_seconds=10.736411869

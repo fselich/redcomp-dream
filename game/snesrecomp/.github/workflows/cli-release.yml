@@ -1,0 +1,64 @@
+name: Self-contained CLI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Select pinned Rust toolchain
+        working-directory: recompiler-rs
+        run: rustup show active-toolchain
+      # The headless contract (docs/LOCAL_CODEGEN_SDK.md) is what recomp-ui and
+      # the RetComM launcher drive. A CLI that cannot answer `generate
+      # --json-progress` cannot rebuild any shipped game. Generation needs the
+      # native analyzer, so build it first.
+      - name: Build native analyzer
+        run: python tools/build_native_analyzer.py
+      - name: Smoke test headless generate / verify-rom contract
+        run: python tools/smoke_sdk_generate.py
+      - name: Install packager
+        run: python -m pip install pyinstaller==6.21.0
+      - name: Build CLI package
+        run: python tools/build_cli.py release
+      - name: Smoke test packaged CLI
+        run: >-
+          python tools/smoke_cli_package.py
+          dist/snesrecomp-cli-windows-x86_64/snesrecomp.exe
+      - uses: actions/upload-artifact@v6
+        with:
+          name: snesrecomp-cli-windows-x86_64
+          path: dist/snesrecomp-cli-windows-x86_64.zip
+          if-no-files-found: error
+
+  publish-release-asset:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: snesrecomp-cli-windows-x86_64
+      - name: Attach CLI package to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: >-
+          gh release upload "$RELEASE_TAG"
+          snesrecomp-cli-windows-x86_64.zip
+          --repo "$GITHUB_REPOSITORY" --clobber

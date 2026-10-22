@@ -1,0 +1,74 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index d6086b3..70fd682 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -26,6 +26,9 @@
+ extern CpuState g_cpu;
+ extern Ppu *g_ppu;
+ 
++SnesBeamLineHook *g_snes_beam_line_hook;
++void *g_snes_beam_line_ctx;
++
+ /* One NTSC field: 262 scanlines x 1364 master clocks. */
+ #define BFD_MASTER_CYCLES_PER_FIELD 357368ull
+ #define BFD_MASTER_CYCLES_PER_LINE 1364u
+@@ -256,6 +259,8 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
+     ppu_rasterApplyLine(g_ppu, line - 1);
+     if (ppu_rasterTakeHdmaen(&hdmaen))
+       dma_startDma(g_snes->dma, hdmaen, true);
++    if (g_snes_beam_line_hook)
++      g_snes_beam_line_hook(g_ppu, (unsigned)line, g_snes_beam_line_ctx);
+     ppu_runLine(g_ppu, line);
+     if (observer)
+       observer(g_ppu, (unsigned)line, context);
+@@ -269,3 +274,13 @@ void snes_beam_frame_driver_reset(void) {
+   s_resume_pc = 0;
+   s_wai_halted = false;
+ }
++
++void snes_beam_frame_driver_get_exec(uint32_t *pc, bool *wai) {
++  if (pc) *pc = s_resume_pc;
++  if (wai) *wai = s_wai_halted;
++}
++
++void snes_beam_frame_driver_set_exec(uint32_t pc, bool wai) {
++  s_resume_pc = pc;
++  s_wai_halted = wai;
++}
+diff --git a/runner/src/beam_frame_driver.h b/runner/src/beam_frame_driver.h
+index 60804fc..ec2dbc0 100644
+--- a/runner/src/beam_frame_driver.h
++++ b/runner/src/beam_frame_driver.h
+@@ -1,6 +1,9 @@
+ #ifndef SNESRECOMP_BEAM_FRAME_DRIVER_H
+ #define SNESRECOMP_BEAM_FRAME_DRIVER_H
+ 
++#include <stdbool.h>
++#include <stdint.h>
++
+ /* Beam-aligned frame driver for whole-program LLE ports.
+  *
+  * One host frame is one PPU field, cut where hardware raises NMI: the beam's
+@@ -26,7 +29,22 @@ struct Ppu;
+ typedef void SnesBeamRasterObserver(const struct Ppu *ppu, unsigned line, void *context);
+ void snes_beam_frame_driver_draw_ppu_frame_observed(
+     SnesBeamRasterObserver *observer, void *context);
++/* Optional host policy run once per visible line, after that line's raster
++ * journal and HDMA have been applied and before it is rasterized. This is
++ * where a host can inspect the scroll a scanline will actually be drawn with
++ * (a frame-model render replays the completed field, so the live register
++ * before the call can be one frame behind). It must not advance the machine;
++ * guest memory and registers must be unchanged on return. */
++typedef void SnesBeamLineHook(struct Ppu *ppu, unsigned line, void *context);
++extern SnesBeamLineHook *g_snes_beam_line_hook;
++extern void *g_snes_beam_line_ctx;
+ /* Forget the booted machine: the next frame starts from the reset vector. */
+ void snes_beam_frame_driver_reset(void);
+ 
++/* The driver's execution position is host state outside the rollback
++ * snapshot. A speculative lane that runs guest frames must carry it with the
++ * blob it saves. */
++void snes_beam_frame_driver_get_exec(uint32_t *pc, bool *wai);
++void snes_beam_frame_driver_set_exec(uint32_t pc, bool wai);
++
+ #endif /* SNESRECOMP_BEAM_FRAME_DRIVER_H */

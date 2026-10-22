@@ -1,0 +1,4176 @@
+#include "mod_runtime.h"
+#include "content_variant.h"
+#include "snes/tier2_capture.h"
+
+#include "crc32.h"
+#include "sha256.h"
+
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cctype>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <map>
+#include <set>
+#include <sstream>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+namespace SNESRecomp {
+/* Every function reachable from C (the snes_mod_* API and the launcher's
+ * provider callbacks) runs inside SNES_MOD_C_BEGIN / SNES_MOD_C_END. An
+ * exception must not cross into C: it reaches std::terminate and the player
+ * sees a crash with no message. A path the platform cannot convert
+ * (std::filesystem_error) is the known case. It becomes the runtime error,
+ * which the Mods page and the host's "mods:" log line already report. */
+void mod_boundary_exception(const char* where, const char* what);
+}  // namespace SNESRecomp
+
+#define SNES_MOD_C_BEGIN try {
+#define SNES_MOD_C_END(...)                                                   \
+    } catch (const std::exception& boundary_error) {                          \
+        SNESRecomp::mod_boundary_exception(__func__, boundary_error.what());  \
+    } catch (...) {                                                           \
+        SNESRecomp::mod_boundary_exception(__func__, "unknown exception");    \
+    }                                                                         \
+    return __VA_ARGS__;
+
+namespace SNESRecomp {
+namespace {
+
+constexpr uint64_t kMaxArchiveBytes = 256ull * 1024ull * 1024ull;
+constexpr uint32_t kMaxArchiveFiles = 4096;
+constexpr const char* kCoveragePackage = "snesrecomp.diagnostics.coverage";
+constexpr const char* kMsu1ResourceIdentity = "snes.msu1.pack";
+
+enum class OptionType {
+    Boolean,
+    Choice,
+    Integer,
+};
+
+struct Choice {
+    std::string value;
+    std::string label;
+};
+
+struct Option {
+    std::string feature_id;
+    std::string id;
+    std::string label;
+    std::string description;
+    std::string group;
+    OptionType type = OptionType::Boolean;
+    std::string default_value = "false";
+    int64_t min_value = 0;
+    int64_t max_value = 1;
+    int64_t step = 1;
+    std::vector<Choice> choices;
+};
+
+struct Feature {
+    std::string id;
+    std::string name;
+    std::string description;
+    std::string group = "General";
+    bool default_enabled = false;
+    /* This feature changes only what the local machine DRAWS, never what it
+     * simulates -- so it is left out of the effective set two netplay peers
+     * compare, and the two of them may differ on it freely.
+     *
+     * snes_mod_runtime_effective_set_c has always said that peers "must agree
+     * on every mod that touches guest memory"; this is the flag that finally
+     * lets a manifest say a mod does not. It was added for an accessibility
+     * filter (a photosensitivity flash guard), where requiring both sides to
+     * match would have made the feature useless in exactly the situation it
+     * exists for: a player who needs it does not get to pick their opponent,
+     * and should not have to ask one for permission to see fewer strobes.
+     *
+     * Declaring it is a CLAIM, and a false one desyncs a match. Set it only
+     * where the feature demonstrably touches no CPU, WRAM, VRAM, OAM, CGRAM,
+     * APU or save state -- a post-process on the presented framebuffer, a
+     * window or viewport policy, an overlay drawn after the guest frame. A
+     * mod that patches ROM text, freezes a RAM address or moves a sprite
+     * bound is simulation state whatever it looks like, and must NOT set it.
+     *
+     * Note that widescreen deliberately does NOT set this even though it is
+     * presentation-only: it negotiates a shared margin through the lobby's
+     * match caps so both peers run the same geometry, so agreement there is
+     * wanted rather than merely tolerated. */
+    bool presentation_only = false;
+    std::vector<std::string> plugins;
+};
+
+struct Target {
+    std::string game_id;
+    std::string rom_sha256;
+};
+
+struct Resource {
+    std::string feature_id;
+    std::string id;
+    std::string label;
+    std::string description;
+    std::string format;
+    std::string identity;
+    std::string normalized_sha1;
+    std::string normalized_sha256;
+    std::string shared_key;
+    std::string file_patterns;
+    std::string file_description;
+    uint64_t size = 0;
+    bool required = true;
+    /* Engine-verified identity of the file's image (copier header stripped).
+     * Unlike normalized_sha1, which only a plugin may act on, this digest is
+     * checked by the runtime before any content variant runs the image. */
+    std::string sha256;
+};
+
+/* A content variant declared by a package: see content_variant.h. */
+struct VariantRow {
+    std::string feature_id;
+    std::string id;
+    std::string display_name;
+    std::string module_id;
+    std::string save_namespace;
+    std::string selector_group;
+    int64_t selector_order = 0;
+    bool has_selector_screen = false;
+    uint32_t selector_wram_addr = 0;
+    uint8_t selector_wram_value = 0;
+    std::string source_rom;          // [[external_rom]] id, "" = launched ROM
+    std::string patch;               // [[patch]] id, "" = none
+    std::vector<std::pair<uint32_t, uint8_t>> boot_pokes;
+    uint32_t boot_entry = 0;
+};
+
+/* An IPS/BPS applied in memory to a variant's verified source image. */
+struct PatchRow {
+    std::string feature_id;
+    std::string id;
+    std::string file;                // relative to the package version dir
+    std::string target_sha256;       // digest of the patched image
+};
+
+struct Package {
+    bool builtin_diagnostic = false; /* only constructed by the executable */
+    uint32_t format_version = 0;
+    std::string id;
+    std::string version;
+    std::string name;
+    std::string author;
+    std::string description;
+    std::string license;
+    fs::path root;
+    std::vector<Target> targets;
+    std::vector<Feature> features;
+    std::vector<Option> options;
+    std::vector<Resource> resources;
+    std::vector<VariantRow> variants;
+    std::vector<PatchRow> patches;
+};
+
+struct FeatureSelection {
+    bool enabled = false;
+    bool has_enabled = false;
+    std::map<std::string, std::string> values;
+    std::map<std::string, std::string> resources;
+};
+
+struct PackageSelection {
+    std::string version;
+    std::map<std::string, FeatureSelection> features;
+};
+
+struct Diagnostic {
+    std::string package_id;
+    std::string feature_id;
+    std::string related_package_id;
+    std::string related_feature_id;
+    std::string resource;
+    std::string message;
+};
+
+struct ResolvedPlugin {
+    std::string id;
+    std::string package_id;
+    std::string feature_id;
+    SNESModActivationCallback callback = nullptr;
+};
+
+struct Validation {
+    bool ok = true;
+    std::vector<Diagnostic> diagnostics;
+    std::vector<ResolvedPlugin> plugins;
+};
+
+struct RegisteredPlugin {
+    SNESModActivationCallback activation = nullptr;
+    /* The EXECUTABLE's word that this plugin only ever changes what is drawn.
+     *
+     * Set by snes_mod_register_presentation_plugin, i.e. by a line of C in a
+     * build somebody reviewed -- never by a manifest. That asymmetry is the
+     * whole value of the field: a manifest is authored by whoever authored the
+     * mod, so `presentation_only` there is the mod vouching for itself, while
+     * this is the program vouching for a function it contains.
+     *
+     * A manifest may therefore only ever claim the exemption for behaviour the
+     * shipped binary ALREADY implements and has already classified. It cannot
+     * introduce a new cosmetic behaviour, because it cannot introduce code at
+     * all: activation runs registered callbacks, and an unregistered id
+     * resolves to nothing. */
+    bool presentation = false;
+};
+
+std::map<std::string, RegisteredPlugin>& registered_plugins() {
+    static std::map<std::string, RegisteredPlugin> value;
+    return value;
+}
+
+std::vector<SNESModActivationCallback>& reset_callbacks() {
+    static std::vector<SNESModActivationCallback> value;
+    return value;
+}
+
+std::vector<SNESModFrameCallback>& frame_callbacks() {
+    static std::vector<SNESModFrameCallback> value;
+    return value;
+}
+
+std::vector<SNESModApuWriteCallback>& apu_write_callbacks() {
+    static std::vector<SNESModApuWriteCallback> value;
+    return value;
+}
+
+uint32_t& synthetic_sram_size() {
+    static uint32_t value = 0;
+    return value;
+}
+
+struct Runtime {
+    fs::path root;
+    std::string game_id;
+    std::string rom_sha256;
+    std::map<std::string, std::map<std::string, Package>> packages;
+    std::map<std::string, PackageSelection> selections;
+    std::map<std::string, PackageSelection> offline_selections;
+    bool temporary_selection = false;
+    std::map<std::string, std::string> shared_resources;
+    Validation validation;
+    Validation committed;
+    std::string error;
+    bool initialized = false;
+
+    /* The cosmetic allowlist in force for this session -- see
+     * snes_mod_runtime_set_cosmetic_allow_c. EMPTY MEANS NOTHING IS EXEMPT,
+     * which is the only safe default: a manifest saying presentation_only is
+     * the mod's own claim about itself, and absent an authority to grant it,
+     * an unrecognised claim has to be worth nothing. */
+    std::string cosmetic_allow;
+    /* package id -> "version\0digest" memo, so a queue gate can pin package
+     * bytes without re-zipping a tree per check. Keyed by id@version. */
+    std::map<std::string, std::string> digest_cache;
+    /* id@version -> "carries nothing but manifest.toml", memoised for the same
+     * reason the digest is: it walks a directory. */
+    std::map<std::string, bool> manifest_only_cache;
+};
+
+Runtime& state() {
+    static Runtime value;
+    return value;
+}
+
+}  // namespace
+
+void mod_boundary_exception(const char* where, const char* what) {
+    std::fprintf(stderr, "mods: %s failed: %s\n", where, what);
+    state().error = std::string("Mods are unavailable: ") + what;
+}
+
+namespace {
+
+void set_error(std::string* out, const std::string& value) {
+    if (out) *out = value;
+}
+
+std::string trim(std::string value) {
+    auto not_space = [](unsigned char c) { return !std::isspace(c); };
+    value.erase(value.begin(),
+                std::find_if(value.begin(), value.end(), not_space));
+    value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(),
+                value.end());
+    return value;
+}
+
+std::string strip_comment(const std::string& line) {
+    bool quoted = false;
+    bool escape = false;
+    for (size_t i = 0; i < line.size(); ++i) {
+        const char c = line[i];
+        if (escape) {
+            escape = false;
+            continue;
+        }
+        if (quoted && c == '\\') {
+            escape = true;
+            continue;
+        }
+        if (c == '"') quoted = !quoted;
+        if (c == '#' && !quoted) return line.substr(0, i);
+    }
+    return line;
+}
+
+bool parse_string(const std::string& text, std::string& out) {
+    const std::string value = trim(text);
+    if (value.size() < 2 || value.front() != '"' || value.back() != '"')
+        return false;
+    out.clear();
+    for (size_t i = 1; i + 1 < value.size(); ++i) {
+        char c = value[i];
+        if (c != '\\') {
+            out.push_back(c);
+            continue;
+        }
+        if (++i + 1 >= value.size()) return false;
+        switch (value[i]) {
+            case '\\': out.push_back('\\'); break;
+            case '"': out.push_back('"'); break;
+            case 'n': out.push_back('\n'); break;
+            case 'r': out.push_back('\r'); break;
+            case 't': out.push_back('\t'); break;
+            default: return false;
+        }
+    }
+    return true;
+}
+
+bool parse_bool(const std::string& text, bool& out) {
+    const std::string value = trim(text);
+    if (value == "true") {
+        out = true;
+        return true;
+    }
+    if (value == "false") {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
+bool parse_int(const std::string& text, int64_t& out) {
+    const std::string value = trim(text);
+    if (value.empty()) return false;
+    char* end = nullptr;
+    errno = 0;
+    const long long parsed = std::strtoll(value.c_str(), &end, 10);
+    if (errno || !end || *end != '\0') return false;
+    out = static_cast<int64_t>(parsed);
+    return true;
+}
+
+bool valid_id(const std::string& value) {
+    if (value.empty() || value.size() > 96 ||
+        value.front() == '.' || value.back() == '.')
+        return false;
+    for (unsigned char c : value) {
+        if (!(std::islower(c) || std::isdigit(c) ||
+              c == '.' || c == '-' || c == '_'))
+            return false;
+    }
+    return true;
+}
+
+bool valid_sha256(const std::string& value) {
+    return value.size() == 64 &&
+        std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return std::isdigit(c) || (c >= 'a' && c <= 'f');
+        });
+}
+
+bool valid_sha1(const std::string& value) {
+    return value.size() == 40 &&
+        std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return std::isdigit(c) || (c >= 'a' && c <= 'f');
+        });
+}
+
+const Feature* find_feature(const Package& package,
+                            const std::string& feature_id) {
+    const auto it = std::find_if(
+        package.features.begin(), package.features.end(),
+        [&](const Feature& feature) { return feature.id == feature_id; });
+    return it == package.features.end() ? nullptr : &*it;
+}
+
+const Option* find_option(const Package& package,
+                          const std::string& feature_id,
+                          const std::string& option_id) {
+    const auto it = std::find_if(
+        package.options.begin(), package.options.end(),
+        [&](const Option& option) {
+            return option.feature_id == feature_id && option.id == option_id;
+        });
+    return it == package.options.end() ? nullptr : &*it;
+}
+
+const Resource* find_resource(const Package& package,
+                              const std::string& feature_id,
+                              const std::string& resource_id) {
+    const auto it = std::find_if(
+        package.resources.begin(), package.resources.end(),
+        [&](const Resource& resource) {
+            return resource.feature_id == feature_id &&
+                   resource.id == resource_id;
+        });
+    return it == package.resources.end() ? nullptr : &*it;
+}
+
+bool validate_option_value(const Option& option, const std::string& value,
+                           std::string* error) {
+    if (option.type == OptionType::Boolean) {
+        if (value == "true" || value == "false") return true;
+        set_error(error, option.label + " must be true or false");
+        return false;
+    }
+    if (option.type == OptionType::Choice) {
+        const bool found = std::any_of(
+            option.choices.begin(), option.choices.end(),
+            [&](const Choice& choice) { return choice.value == value; });
+        if (found) return true;
+        set_error(error, option.label + " has an unknown choice");
+        return false;
+    }
+    int64_t parsed = 0;
+    if (!parse_int(value, parsed) ||
+        parsed < option.min_value || parsed > option.max_value ||
+        option.step <= 0 ||
+        (parsed - option.min_value) % option.step != 0) {
+        set_error(error, option.label + " is outside its allowed range");
+        return false;
+    }
+    return true;
+}
+
+bool resource_is_directory(const Resource& resource) {
+    return resource.format == "directory" || resource.format == "folder";
+}
+
+bool parse_hex_u32(const std::string& text, uint32_t& out) {
+    std::string t = trim(text);
+    if (t.size() >= 2 && (t[0] == '"' || t[0] == '\'')) {
+        std::string inner;
+        if (!parse_string(t, inner)) return false;
+        t = trim(inner);
+    }
+    if (t.empty()) return false;
+    try {
+        size_t used = 0;
+        unsigned long long v = std::stoull(t, &used, 0);
+        if (used != t.size() || v > 0xFFFFFFFFull) return false;
+        out = (uint32_t)v;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+/* "0x0100=0x08" -> (0x0100, 0x08). The address is a WRAM offset. */
+bool parse_wram_predicate(const std::string& text, uint32_t& addr, uint8_t& value) {
+    const size_t eq = text.find('=');
+    if (eq == std::string::npos) return false;
+    uint32_t a = 0, v = 0;
+    if (!parse_hex_u32(text.substr(0, eq), a) ||
+        !parse_hex_u32(text.substr(eq + 1), v))
+        return false;
+    if (a >= 0x20000u || v > 0xFFu) return false;
+    addr = a;
+    value = (uint8_t)v;
+    return true;
+}
+
+/* "0x7FFF00=0x02,0x7FFF01=0x00" -> 24-bit bus addresses and byte values. */
+bool parse_boot_pokes(const std::string& text,
+                      std::vector<std::pair<uint32_t, uint8_t>>& out) {
+    out.clear();
+    size_t start = 0;
+    while (start <= text.size()) {
+        size_t comma = text.find(',', start);
+        std::string item = trim(text.substr(
+            start, comma == std::string::npos ? std::string::npos : comma - start));
+        if (!item.empty()) {
+            const size_t eq = item.find('=');
+            if (eq == std::string::npos) return false;
+            uint32_t a = 0, v = 0;
+            if (!parse_hex_u32(item.substr(0, eq), a) ||
+                !parse_hex_u32(item.substr(eq + 1), v) ||
+                a > 0xFFFFFFu || v > 0xFFu)
+                return false;
+            out.emplace_back(a, (uint8_t)v);
+            if (out.size() > 8) return false;
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return true;
+}
+
+bool read_manifest(const fs::path& path, Package& out, std::string* error) {
+    std::ifstream file(path);
+    if (!file) {
+        set_error(error, "cannot open manifest: " + path.string());
+        return false;
+    }
+
+    enum class Section {
+        Package,
+        Target,
+        Feature,
+        Option,
+        Choice,
+        Plugin,
+        Resource,
+        Variant,
+        Patch,
+    };
+    Section section = Section::Package;
+    VariantRow* variant = nullptr;
+    PatchRow* patch = nullptr;
+    Target* target = nullptr;
+    Feature* feature = nullptr;
+    Option* option = nullptr;
+    Choice* choice = nullptr;
+    Resource* resource = nullptr;
+    std::string plugin_feature;
+    std::string plugin_id;
+
+    auto finish_plugin = [&]() -> bool {
+        if (plugin_feature.empty() && plugin_id.empty()) return true;
+        Feature* owner = nullptr;
+        for (Feature& candidate : out.features) {
+            if (candidate.id == plugin_feature) {
+                owner = &candidate;
+                break;
+            }
+        }
+        if (!owner || !valid_id(plugin_id)) {
+            set_error(error, "plugin has an invalid feature or id");
+            return false;
+        }
+        owner->plugins.push_back(plugin_id);
+        plugin_feature.clear();
+        plugin_id.clear();
+        return true;
+    };
+
+    std::string raw;
+    size_t line_number = 0;
+    while (std::getline(file, raw)) {
+        ++line_number;
+        std::string line = trim(strip_comment(raw));
+        if (line.empty()) continue;
+        if (line.rfind("[[", 0) == 0 &&
+            line.size() >= 4 &&
+            line.substr(line.size() - 2) == "]]") {
+            if (section == Section::Plugin && !finish_plugin()) return false;
+            const std::string name = trim(line.substr(2, line.size() - 4));
+            target = nullptr;
+            feature = nullptr;
+            option = nullptr;
+            choice = nullptr;
+            resource = nullptr;
+            variant = nullptr;
+            patch = nullptr;
+            if (name == "target") {
+                section = Section::Target;
+                out.targets.emplace_back();
+                target = &out.targets.back();
+            } else if (name == "feature") {
+                section = Section::Feature;
+                out.features.emplace_back();
+                feature = &out.features.back();
+            } else if (name == "option") {
+                section = Section::Option;
+                out.options.emplace_back();
+                option = &out.options.back();
+            } else if (name == "option.choice") {
+                if (out.options.empty()) {
+                    set_error(error, "option.choice appears before option");
+                    return false;
+                }
+                section = Section::Choice;
+                out.options.back().choices.emplace_back();
+                option = &out.options.back();
+                choice = &option->choices.back();
+            } else if (name == "plugin") {
+                section = Section::Plugin;
+            } else if (name == "resource" || name == "external_rom") {
+                section = Section::Resource;
+                out.resources.emplace_back();
+                resource = &out.resources.back();
+            } else if (name == "variant") {
+                section = Section::Variant;
+                out.variants.emplace_back();
+                variant = &out.variants.back();
+            } else if (name == "patch") {
+                section = Section::Patch;
+                out.patches.emplace_back();
+                patch = &out.patches.back();
+            } else {
+                set_error(error, "unsupported manifest section [[" + name + "]]");
+                return false;
+            }
+            continue;
+        }
+
+        const size_t equals = line.find('=');
+        if (equals == std::string::npos) {
+            set_error(error, "invalid manifest line " +
+                             std::to_string(line_number));
+            return false;
+        }
+        const std::string key = trim(line.substr(0, equals));
+        const std::string value = trim(line.substr(equals + 1));
+        std::string string_value;
+        int64_t int_value = 0;
+        bool bool_value = false;
+
+        auto string_field = [&](std::string& field) -> bool {
+            if (!parse_string(value, string_value)) return false;
+            field = string_value;
+            return true;
+        };
+
+        bool known = true;
+        bool parsed = true;
+        switch (section) {
+            case Section::Package:
+                if (key == "format_version") {
+                    parsed = parse_int(value, int_value) &&
+                             int_value >= 1 && int_value <= 1;
+                    if (parsed) out.format_version = (uint32_t)int_value;
+                } else if (key == "id") parsed = string_field(out.id);
+                else if (key == "version") parsed = string_field(out.version);
+                else if (key == "name") parsed = string_field(out.name);
+                else if (key == "author") parsed = string_field(out.author);
+                else if (key == "description") parsed = string_field(out.description);
+                else if (key == "license") parsed = string_field(out.license);
+                else if (key == "resolver") {
+                    parsed = parse_string(value, string_value) &&
+                             string_value == "declarative";
+                } else if (key == "save_compatibility") {
+                    parsed = parse_string(value, string_value);
+                } else known = false;
+                break;
+            case Section::Target:
+                if (!target) parsed = false;
+                else if (key == "game_id") parsed = string_field(target->game_id);
+                else if (key == "rom_sha256") parsed = string_field(target->rom_sha256);
+                else known = false;
+                break;
+            case Section::Feature:
+                feature = out.features.empty() ? nullptr : &out.features.back();
+                if (!feature) parsed = false;
+                else if (key == "id") parsed = string_field(feature->id);
+                else if (key == "name") parsed = string_field(feature->name);
+                else if (key == "description") parsed = string_field(feature->description);
+                else if (key == "group") parsed = string_field(feature->group);
+                else if (key == "default_enabled") {
+                    parsed = parse_bool(value, bool_value);
+                    if (parsed) feature->default_enabled = bool_value;
+                } else if (key == "presentation_only") {
+                    parsed = parse_bool(value, bool_value);
+                    if (parsed) feature->presentation_only = bool_value;
+                } else known = false;
+                break;
+            case Section::Option:
+                option = out.options.empty() ? nullptr : &out.options.back();
+                if (!option) parsed = false;
+                else if (key == "feature") parsed = string_field(option->feature_id);
+                else if (key == "id") parsed = string_field(option->id);
+                else if (key == "label") parsed = string_field(option->label);
+                else if (key == "description") parsed = string_field(option->description);
+                else if (key == "group") parsed = string_field(option->group);
+                else if (key == "type") {
+                    parsed = parse_string(value, string_value);
+                    if (parsed && string_value == "boolean")
+                        option->type = OptionType::Boolean;
+                    else if (parsed && string_value == "choice")
+                        option->type = OptionType::Choice;
+                    else if (parsed && string_value == "integer")
+                        option->type = OptionType::Integer;
+                    else parsed = false;
+                } else if (key == "default") {
+                    if (parse_string(value, string_value))
+                        option->default_value = string_value;
+                    else if (parse_bool(value, bool_value))
+                        option->default_value = bool_value ? "true" : "false";
+                    else if (parse_int(value, int_value))
+                        option->default_value = std::to_string(int_value);
+                    else parsed = false;
+                } else if (key == "min") {
+                    parsed = parse_int(value, option->min_value);
+                } else if (key == "max") {
+                    parsed = parse_int(value, option->max_value);
+                } else if (key == "step") {
+                    parsed = parse_int(value, option->step);
+                } else known = false;
+                break;
+            case Section::Choice:
+                option = out.options.empty() ? nullptr : &out.options.back();
+                choice = (!option || option->choices.empty())
+                    ? nullptr : &option->choices.back();
+                if (!choice) parsed = false;
+                else if (key == "value") parsed = string_field(choice->value);
+                else if (key == "label") parsed = string_field(choice->label);
+                else known = false;
+                break;
+            case Section::Plugin:
+                if (key == "feature") parsed = string_field(plugin_feature);
+                else if (key == "id") parsed = string_field(plugin_id);
+                else known = false;
+                break;
+            case Section::Resource:
+                resource = out.resources.empty() ? nullptr : &out.resources.back();
+                if (!resource) parsed = false;
+                else if (key == "feature") parsed = string_field(resource->feature_id);
+                else if (key == "id") parsed = string_field(resource->id);
+                else if (key == "label") parsed = string_field(resource->label);
+                else if (key == "description") parsed = string_field(resource->description);
+                else if (key == "format") parsed = string_field(resource->format);
+                else if (key == "identity") parsed = string_field(resource->identity);
+                else if (key == "normalized_sha1") parsed = string_field(resource->normalized_sha1);
+                else if (key == "sha256") parsed = string_field(resource->sha256);
+                else if (key == "normalized_sha256") parsed = string_field(resource->normalized_sha256);
+                else if (key == "shared_key") parsed = string_field(resource->shared_key);
+                else if (key == "file_patterns") parsed = string_field(resource->file_patterns);
+                else if (key == "file_description") parsed = string_field(resource->file_description);
+                else if (key == "size") {
+                    parsed = parse_int(value, int_value) && int_value > 0;
+                    if (parsed) resource->size = (uint64_t)int_value;
+                } else if (key == "required") {
+                    parsed = parse_bool(value, bool_value);
+                    if (parsed) resource->required = bool_value;
+                } else known = false;
+                break;
+            case Section::Variant:
+                variant = out.variants.empty() ? nullptr : &out.variants.back();
+                if (!variant) parsed = false;
+                else if (key == "feature") parsed = string_field(variant->feature_id);
+                else if (key == "id") parsed = string_field(variant->id);
+                else if (key == "display_name") parsed = string_field(variant->display_name);
+                else if (key == "module") parsed = string_field(variant->module_id);
+                else if (key == "save_namespace") parsed = string_field(variant->save_namespace);
+                else if (key == "selector_group") parsed = string_field(variant->selector_group);
+                else if (key == "selector_order") {
+                    parsed = parse_int(value, int_value);
+                    if (parsed) variant->selector_order = int_value;
+                } else if (key == "selector_wram") {
+                    // "0x0100=0x08": the WRAM byte (offset from $7E0000) and
+                    // the value it holds on the screen where the picker shows.
+                    parsed = parse_string(value, string_value) &&
+                             parse_wram_predicate(string_value,
+                                                  variant->selector_wram_addr,
+                                                  variant->selector_wram_value);
+                    if (parsed) variant->has_selector_screen = true;
+                } else if (key == "source_rom") parsed = string_field(variant->source_rom);
+                else if (key == "patch") parsed = string_field(variant->patch);
+                else if (key == "boot_pokes") {
+                    parsed = parse_string(value, string_value) &&
+                             parse_boot_pokes(string_value, variant->boot_pokes);
+                } else if (key == "boot_entry") {
+                    parsed = parse_hex_u32(value, variant->boot_entry) &&
+                             variant->boot_entry <= 0xFFFFFFu;
+                } else known = false;
+                break;
+            case Section::Patch:
+                patch = out.patches.empty() ? nullptr : &out.patches.back();
+                if (!patch) parsed = false;
+                else if (key == "feature") parsed = string_field(patch->feature_id);
+                else if (key == "id") parsed = string_field(patch->id);
+                else if (key == "file") parsed = string_field(patch->file);
+                else if (key == "target_sha256") parsed = string_field(patch->target_sha256);
+                else known = false;
+                break;
+        }
+        if (!known || !parsed) {
+            set_error(error, "invalid or unsupported manifest field '" + key +
+                             "' on line " + std::to_string(line_number));
+            return false;
+        }
+    }
+    if (section == Section::Plugin && !finish_plugin()) return false;
+
+    if (out.format_version != 1 || !valid_id(out.id) ||
+        out.version.empty() || out.name.empty() || out.targets.empty() ||
+        out.features.empty()) {
+        set_error(error, "manifest is missing required package fields");
+        return false;
+    }
+    std::set<std::string> feature_ids;
+    for (const Target& item : out.targets) {
+        if (item.game_id.empty() || !valid_sha256(item.rom_sha256)) {
+            set_error(error, "manifest has an invalid target");
+            return false;
+        }
+    }
+    for (const Feature& item : out.features) {
+        if (!valid_id(item.id) || item.name.empty() ||
+            !feature_ids.insert(item.id).second) {
+            set_error(error, "manifest has an invalid or duplicate feature");
+            return false;
+        }
+    }
+    std::set<std::pair<std::string, std::string>> option_ids;
+    for (const Option& item : out.options) {
+        if (!find_feature(out, item.feature_id) || !valid_id(item.id) ||
+            item.label.empty() ||
+            !option_ids.insert({item.feature_id, item.id}).second ||
+            !validate_option_value(item, item.default_value, error)) {
+            if (error && error->empty())
+                *error = "manifest has an invalid option";
+            return false;
+        }
+        if (item.type == OptionType::Choice &&
+            (item.choices.empty() ||
+             std::any_of(item.choices.begin(), item.choices.end(),
+                         [](const Choice& c) {
+                             return c.value.empty() || c.label.empty();
+                         }))) {
+            set_error(error, "choice option has no valid choices");
+            return false;
+        }
+    }
+    std::set<std::pair<std::string, std::string>> resource_ids;
+    for (Resource& item : out.resources) {
+        if ((!item.shared_key.empty() && !valid_id(item.shared_key)) ||
+            (!item.normalized_sha256.empty() && !valid_sha256(item.normalized_sha256))) {
+            set_error(error, "manifest has an invalid shared resource key or sha256");
+            return false;
+        }
+        if (!find_feature(out, item.feature_id) || !valid_id(item.id) ||
+            item.label.empty() ||
+            !resource_ids.insert({item.feature_id, item.id}).second) {
+            set_error(error, "manifest has an invalid resource");
+            return false;
+        }
+        if (!item.normalized_sha1.empty() &&
+            !valid_sha1(item.normalized_sha1)) {
+            set_error(error, "manifest has an invalid resource sha1");
+            return false;
+        }
+        if (!item.sha256.empty() && !valid_sha256(item.sha256)) {
+            set_error(error, "manifest has an invalid resource sha256");
+            return false;
+        }
+        if (item.format == "n64") {
+            if (item.file_patterns.empty())
+                item.file_patterns = "*.z64,*.v64,*.n64";
+            if (item.file_description.empty())
+                item.file_description = "Nintendo 64 ROM";
+        }
+        if (item.file_patterns.empty() && !resource_is_directory(item))
+            item.file_patterns = "*";
+        if (item.file_description.empty() && !resource_is_directory(item))
+            item.file_description = "Owner resource";
+    }
+    std::set<std::pair<std::string, std::string>> patch_ids;
+    for (const PatchRow& item : out.patches) {
+        const bool escapes = item.file.empty() ||
+                             item.file.find("..") != std::string::npos ||
+                             item.file[0] == '/' || item.file[0] == '\\' ||
+                             item.file.find(':') != std::string::npos;
+        if (!find_feature(out, item.feature_id) || !valid_id(item.id) || escapes ||
+            !patch_ids.insert({item.feature_id, item.id}).second) {
+            set_error(error, "manifest has an invalid patch");
+            return false;
+        }
+        if (!item.target_sha256.empty() && !valid_sha256(item.target_sha256)) {
+            set_error(error, "manifest has an invalid patch target_sha256");
+            return false;
+        }
+    }
+    std::set<std::string> variant_ids;
+    for (VariantRow& item : out.variants) {
+        if (!find_feature(out, item.feature_id) || !valid_id(item.id) ||
+            item.module_id.empty() || !variant_ids.insert(item.id).second) {
+            set_error(error, "manifest has an invalid or duplicate variant");
+            return false;
+        }
+        if (item.display_name.empty()) item.display_name = item.id;
+        if (item.save_namespace.empty()) item.save_namespace = item.id;
+        if (!item.source_rom.empty() &&
+            !find_resource(out, item.feature_id, item.source_rom)) {
+            set_error(error, "variant '" + item.id +
+                             "' names a source_rom that is not an external_rom "
+                             "of its feature");
+            return false;
+        }
+        if (!item.patch.empty() &&
+            std::none_of(out.patches.begin(), out.patches.end(),
+                         [&](const PatchRow& p) {
+                             return p.feature_id == item.feature_id &&
+                                    p.id == item.patch;
+                         })) {
+            set_error(error, "variant '" + item.id +
+                             "' names a patch that is not declared by its feature");
+            return false;
+        }
+    }
+    return true;
+}
+
+const Package* selected_package(const Runtime& runtime,
+                                const std::string& id) {
+    const auto packages = runtime.packages.find(id);
+    if (packages == runtime.packages.end() || packages->second.empty())
+        return nullptr;
+    const auto selection = runtime.selections.find(id);
+    if (selection != runtime.selections.end() &&
+        !selection->second.version.empty()) {
+        const auto version =
+            packages->second.find(selection->second.version);
+        if (version != packages->second.end()) return &version->second;
+    }
+    return &packages->second.rbegin()->second;
+}
+
+PackageSelection& package_selection(Runtime& runtime,
+                                    const Package& package) {
+    PackageSelection& selection = runtime.selections[package.id];
+    if (selection.version.empty()) selection.version = package.version;
+    return selection;
+}
+
+bool feature_enabled(Runtime& runtime, const Package& package,
+                     const Feature& feature) {
+    PackageSelection& package_state = package_selection(runtime, package);
+    FeatureSelection& selection = package_state.features[feature.id];
+    if (!selection.has_enabled)
+        selection.enabled = feature.default_enabled;
+    if (package.builtin_diagnostic) {
+        tier2_capture_set_selection(selection.enabled);
+        return tier2_capture_enabled() != 0;
+    }
+    return selection.enabled;
+}
+
+/* Features claiming the same trusted plugin cannot run together (validate
+ * reports them as a conflict), so selecting one is a choice between them:
+ * enabling it deselects every other enabled claimant. */
+void deselect_plugin_rivals(Runtime& runtime, const Package& package,
+                            const Feature& feature) {
+    for (const auto& [id, versions] : runtime.packages) {
+        (void)versions;
+        const Package* other = selected_package(runtime, id);
+        if (!other) continue;
+        for (const Feature& rival : other->features) {
+            if (other->id == package.id && rival.id == feature.id) continue;
+            const bool shared = std::any_of(
+                rival.plugins.begin(), rival.plugins.end(),
+                [&](const std::string& plugin) {
+                    return std::find(feature.plugins.begin(),
+                                     feature.plugins.end(),
+                                     plugin) != feature.plugins.end();
+                });
+            if (!shared || !feature_enabled(runtime, *other, rival)) continue;
+            FeatureSelection& selection =
+                package_selection(runtime, *other).features[rival.id];
+            selection.enabled = false;
+            selection.has_enabled = true;
+            if (other->builtin_diagnostic) tier2_capture_set_selection(0);
+        }
+    }
+}
+
+/* Deterministic content digest of an installed package, memoised.
+ *
+ * zip_store_tree sorts its file list precisely so that the same package packs
+ * to byte-identical bytes on any machine, which is what makes a digest of it
+ * mean the same thing to a server and to a client. Declared before its use in
+ * cosmetic_allowed; defined further down, next to the packing code. */
+bool package_digest(Runtime& runtime, const std::string& package_id,
+                    const std::string& version, std::string& out);
+
+/*
+ * Does the session's allowlist grant this package the cosmetic exemption?
+ *
+ * The allowlist is ';'-separated, each entry one of:
+ *
+ *     <package_id>@<version>
+ *     <package_id>@<version>#<sha256 of the packed package>
+ *
+ * The digest form is the one worth using. Without it the list is keyed on a
+ * string the client chooses for itself, so a mod that wants the exemption
+ * simply calls itself by an allowlisted id -- which is not a whitelist, it is
+ * a naming convention. With it, the entry names specific bytes.
+ *
+ * What this can and cannot do is worth being exact about, because the
+ * difference decides whether anyone is misled. It stops a player from
+ * REDISTRIBUTING something that claims to be cosmetic and is not: a "flash
+ * guard" with a wallhack in it packs to different bytes and is refused on
+ * every machine that installs it. It does NOT stop someone who patches their
+ * own executable, because a patched client can report whatever it likes --
+ * defending against that needs server-side verification of the simulation,
+ * which does not exist here. The purpose is to close the omission, so that
+ * getting an unapproved mod into a match requires deliberate forgery rather
+ * than merely declaring a flag in a manifest nobody checks.
+ */
+bool cosmetic_allowed(Runtime& runtime, const Package& package) {
+    if (runtime.cosmetic_allow.empty()) return false;
+
+    /* The RESOLVED package's own id and version, not the selection map's.
+     * selected_package falls back to the newest installed version when a
+     * selection names none, so reading the selection here could check the
+     * allowlist against one version while the match runs another. */
+    const std::string& package_id = package.id;
+    const std::string& version = package.version;
+    if (package_id.empty() || version.empty()) return false;
+
+    const std::string want = package_id + "@" + version;
+    const std::string& list = runtime.cosmetic_allow;
+    std::size_t pos = 0;
+    while (pos <= list.size()) {
+        std::size_t end = list.find(';', pos);
+        if (end == std::string::npos) end = list.size();
+        std::string entry = trim(list.substr(pos, end - pos));
+        pos = end + 1;
+        if (entry.empty()) continue;
+
+        std::string pinned;
+        const std::size_t hash = entry.find('#');
+        if (hash != std::string::npos) {
+            pinned = trim(entry.substr(hash + 1));
+            entry = trim(entry.substr(0, hash));
+        }
+        if (entry != want) continue;
+
+        if (pinned.empty())
+            return true;        /* named, not pinned */
+
+        std::string have;
+        if (!package_digest(runtime, package_id, version, have))
+            return false;       /* cannot prove it: refuse, never assume */
+        /* Case-insensitive on the hex, so a list written in either case works;
+         * the comparison is still the whole 64 characters. */
+        if (pinned.size() != have.size()) continue;
+        bool same = true;
+        for (std::size_t i = 0; i < have.size() && same; ++i)
+            same = std::tolower((unsigned char)pinned[i]) ==
+                   std::tolower((unsigned char)have[i]);
+        if (same) return true;
+    }
+    return false;
+}
+
+/*
+ * Does this package carry ANYTHING but its manifest?
+ *
+ * A package eligible for the cosmetic exemption may carry no payload at all --
+ * no data file, no patch table, no image, nothing. It may only SELECT among
+ * behaviour the executable already ships.
+ *
+ * This is the check that makes "presentation only" a property rather than a
+ * promise. A manifest cannot introduce code (activation runs only callbacks
+ * the binary registered, and an unregistered plugin id resolves to nothing),
+ * so the one way a package can still influence the guest is by shipping data
+ * that some built-in feature consumes -- which is exactly how localization
+ * patches ROM text, from a .toml inside its own package. A package with no
+ * files has no such lever, and the property is verifiable here rather than
+ * taken on trust.
+ *
+ * Note it is deliberately stricter than "declares no [[resource]]": the
+ * localization table is not a declared resource, it is simply a file the
+ * plugin opens by path. Counting declarations would have missed it.
+ */
+bool package_is_manifest_only(Runtime& runtime, const Package& package) {
+    const std::string key = package.id + "@" + package.version;
+    const auto hit = runtime.manifest_only_cache.find(key);
+    if (hit != runtime.manifest_only_cache.end()) return hit->second;
+
+    bool only = true;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(package.root, ec), end;
+         it != end; it.increment(ec)) {
+        if (ec) { only = false; break; }   /* cannot see it: do not vouch */
+        if (!it->is_regular_file(ec) || ec) continue;
+        const std::string name = it->path().filename().string();
+        if (name != "manifest.toml") { only = false; break; }
+    }
+    runtime.manifest_only_cache[key] = only;
+    return only;
+}
+
+/*
+ * Is the CLAIM even admissible, before asking whether anyone granted it?
+ *
+ * Three things, and none of them is the manifest's opinion of itself:
+ *
+ *   1. the manifest asks (feature.presentation_only) -- necessary, worthless
+ *      alone, because a cheat author writes manifests too;
+ *   2. every plugin the feature turns on was registered by the EXECUTABLE as
+ *      presentation-only. A manifest can only name plugins; whether a named
+ *      plugin merely draws is a fact about compiled code that a reviewer
+ *      classified, not something the package gets a say in. A feature naming a
+ *      plugin the binary registered normally -- or one it does not have at all
+ *      -- is not admissible however loudly its manifest claims otherwise;
+ *   3. the package carries nothing but its manifest, so it cannot feed data to
+ *      a built-in feature that patches the guest.
+ *
+ * This runs BEFORE the allowlist, so it holds even against a server that
+ * allowlists something it should not have. The grant decides whether an
+ * admissible claim is honoured; this decides whether it was ever a real claim.
+ */
+bool claim_admissible(Runtime& runtime, const Package& package,
+                      const Feature& feature) {
+    if (!feature.presentation_only) return false;
+    for (const std::string& plugin_id : feature.plugins) {
+        const auto registered = registered_plugins().find(plugin_id);
+        if (registered == registered_plugins().end() ||
+            !registered->second.activation ||
+            !registered->second.presentation) {
+            /* Loud, because this is what an attempt to smuggle a
+             * simulation-affecting feature past the mod comparison looks
+             * like, and it is otherwise indistinguishable from a typo. */
+            std::fprintf(stderr,
+                "mods: %s/%s claims presentation_only, but this build does not "
+                "classify plugin '%s' as presentation -- the claim is refused "
+                "and the feature is treated as simulation-affecting\n",
+                package.id.c_str(), feature.id.c_str(), plugin_id.c_str());
+            return false;
+        }
+    }
+    if (!package_is_manifest_only(runtime, package)) {
+        std::fprintf(stderr,
+            "mods: %s claims presentation_only but ships files beyond its "
+            "manifest -- the claim is refused\n", package.id.c_str());
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Is this enabled feature exempt from everything netplay compares?
+ *
+ * TWO conditions, and both are needed. The manifest's presentation_only is the
+ * mod ASKING; the session's allowlist is the authority GRANTING. A claim with
+ * no grant behind it is treated as an ordinary simulation-affecting feature --
+ * it appears in the compared set, it is published in the plan rows, and an
+ * adopt sweeps it off -- which is exactly how an unrecognised mod should be
+ * handled and is the behaviour that predates the flag.
+ *
+ * Every consumer that used to test `feature.presentation_only` directly must
+ * go through here instead. Testing the flag alone is the bug this function
+ * exists to prevent: it would let any manifest exempt itself.
+ */
+bool feature_exempt(Runtime& runtime, const Package& package,
+                    const Feature& feature) {
+    if (package.builtin_diagnostic) return true;
+    if (!claim_admissible(runtime, package, feature)) return false;
+    return cosmetic_allowed(runtime, package);
+}
+
+std::string option_value(Runtime& runtime, const Package& package,
+                         const Feature& feature, const Option& option) {
+    PackageSelection& package_state = package_selection(runtime, package);
+    FeatureSelection& selection = package_state.features[feature.id];
+    const auto value = selection.values.find(option.id);
+    return value == selection.values.end() ? option.default_value :
+                                             value->second;
+}
+
+std::string resource_path(Runtime& runtime, const Package& package,
+                          const Feature& feature,
+                          const Resource& resource) {
+    if (!resource.shared_key.empty()) {
+        const auto shared = runtime.shared_resources.find(resource.shared_key);
+        if (shared != runtime.shared_resources.end()) return shared->second;
+        /* Migrate a previously per-feature selection once. New edits and
+         * persistence have one canonical value, including an explicit clear. */
+        for (const auto& [id, versions] : runtime.packages) {
+            const Package* p = selected_package(runtime, id);
+            if (!p) continue;
+            for (const auto& r : p->resources) if (r.shared_key == resource.shared_key) {
+                const auto& paths = package_selection(runtime, *p).features[r.feature_id].resources;
+                const auto old = paths.find(r.id);
+                if (old != paths.end() && !old->second.empty()) {
+                    runtime.shared_resources[resource.shared_key] = old->second;
+                    return old->second;
+                }
+            }
+        }
+        return {};
+    }
+    PackageSelection& package_state = package_selection(runtime, package);
+    FeatureSelection& selection = package_state.features[feature.id];
+    const auto value = selection.resources.find(resource.id);
+    return value == selection.resources.end() ? std::string() :
+                                                value->second;
+}
+
+bool sha256_file(const fs::path& path, std::string& out, std::string* error);
+
+const SnesRomRevision* g_rom_catalog = nullptr;
+int g_rom_catalog_count = 0;
+unsigned g_rom_catalog_generation = 0;   /* invalidates memoized statuses */
+
+/* Status for a ROM resource whose digest is not the required one: which dump
+ * it is (from the port's catalog), or its header when unknown, and what to
+ * select instead. */
+std::string wrong_rom_status_uncached(const Resource& resource,
+                                     const std::string& path_text) {
+    char why[256] = "";
+    const SnesRomVerdict verdict = snes_rom_identity_check_file(
+        path_text.c_str(), g_rom_catalog, g_rom_catalog_count,
+        resource.normalized_sha256.c_str(), nullptr, nullptr, nullptr, why,
+        sizeof(why));
+    if (verdict == kSnesRom_Ok || !why[0])
+        return "Wrong ROM: select the original supported version";
+    return why;
+}
+
+bool validate_resource_file(const Resource& resource,
+                            const std::string& path_text,
+                            std::string* status) {
+    if (path_text.empty()) {
+        if (status) {
+            *status = resource.required
+                ? (resource_is_directory(resource) ? "Required: select a folder"
+                                                   : "Required: select a file")
+                : "Not selected";
+        }
+        return !resource.required;
+    }
+    const fs::path path(path_text);
+    std::error_code ec;
+    if (resource_is_directory(resource)) {
+        if (!fs::is_directory(path, ec)) {
+            if (status) *status = "Folder not found";
+            return false;
+        }
+    } else if (!fs::is_regular_file(path, ec)) {
+        if (status) *status = "File not found";
+        return false;
+    }
+    if (resource.size != 0 && !resource_is_directory(resource)) {
+        const uint64_t actual = (uint64_t)fs::file_size(path, ec);
+        if (ec || actual != resource.size) {
+            if (status) *status = "File size does not match";
+            return false;
+        }
+    }
+    if (!resource.normalized_sha256.empty()) {
+        /* The status is drawn every frame: keep the explanation for a wrong
+         * ROM with its digest rather than reading the file again. */
+        struct HashMemo {
+            uintmax_t size; fs::file_time_type time; std::string hash;
+            std::string wrong_for; std::string wrong_status;
+            unsigned wrong_generation;
+        };
+        static std::map<std::string, HashMemo> memo;
+        const auto size = fs::file_size(path, ec);
+        if (ec || size > 64 * 1024 * 1024) { if (status) *status = "ROM size is invalid"; return false; }
+        const auto time = fs::last_write_time(path, ec);
+        if (ec) { if (status) *status = "Cannot read ROM"; return false; }
+        auto found = memo.find(path_text);
+        if (found == memo.end() || found->second.size != size || found->second.time != time) {
+            std::string hash, error;
+            if (!sha256_file(path, hash, &error)) { if (status) *status = "Cannot read ROM"; return false; }
+            found = memo.insert_or_assign(path_text, HashMemo{size,time,hash,{},{},0}).first;
+        }
+        if (found->second.hash != resource.normalized_sha256) {
+            if (status) {
+                if (found->second.wrong_for != resource.normalized_sha256 ||
+                    found->second.wrong_generation != g_rom_catalog_generation ||
+                    found->second.wrong_status.empty()) {
+                    found->second.wrong_status =
+                        wrong_rom_status_uncached(resource, path_text);
+                    found->second.wrong_for = resource.normalized_sha256;
+                    found->second.wrong_generation = g_rom_catalog_generation;
+                }
+                *status = found->second.wrong_status;
+            }
+            return false;
+        }
+        if (status) *status = "ROM verified";
+        return true;
+    }
+    if (status) {
+        *status = resource.normalized_sha1.empty()
+            ? "Selected"
+            : "Selected; identity verified at launch";
+    }
+    return true;
+}
+
+bool set_process_env(const char* name, const std::string& value) {
+#ifdef _WIN32
+    return _putenv_s(name, value.c_str()) == 0;
+#else
+    return setenv(name, value.c_str(), 1) == 0;
+#endif
+}
+
+bool unset_process_env(const char* name) {
+#ifdef _WIN32
+    return _putenv_s(name, "") == 0;
+#else
+    return unsetenv(name) == 0;
+#endif
+}
+
+bool apply_committed_resource_environment(Runtime& runtime,
+                                          std::string* error) {
+    std::string msu1_path;
+    for (const auto& [id, versions] : runtime.packages) {
+        (void)id;
+        (void)versions;
+        const Package* package = selected_package(runtime, id);
+        if (!package) continue;
+        for (const Feature& feature : package->features) {
+            if (!feature_enabled(runtime, *package, feature)) continue;
+            for (const Resource& resource : package->resources) {
+                if (resource.feature_id != feature.id ||
+                    resource.identity != kMsu1ResourceIdentity)
+                    continue;
+                std::string status;
+                const std::string path =
+                    resource_path(runtime, *package, feature, resource);
+                if (!validate_resource_file(resource, path, &status)) {
+                    set_error(error, status);
+                    return false;
+                }
+                if (msu1_path.empty()) msu1_path = path;
+            }
+        }
+    }
+    if (msu1_path.empty()) {
+        if (!unset_process_env("SNESRECOMP_MSU1")) {
+            set_error(error, "cannot clear MSU-1 resource environment");
+            return false;
+        }
+        return true;
+    }
+    if (!set_process_env("SNESRECOMP_MSU1", msu1_path)) {
+        set_error(error, "cannot set MSU-1 resource environment");
+        return false;
+    }
+    return true;
+}
+
+bool target_matches(const Package& package, const Runtime& runtime) {
+    return std::any_of(
+        package.targets.begin(), package.targets.end(),
+        [&](const Target& target) {
+            return target.game_id == runtime.game_id &&
+                   target.rom_sha256 == runtime.rom_sha256;
+        });
+}
+
+Validation validate(Runtime& runtime) {
+    Validation result;
+    std::map<std::string, ResolvedPlugin> claimed;
+    for (const auto& [id, versions] : runtime.packages) {
+        (void)versions;
+        const Package* package = selected_package(runtime, id);
+        if (!package) continue;
+        for (const Feature& feature : package->features) {
+            if (!feature_enabled(runtime, *package, feature)) continue;
+            if (!target_matches(*package, runtime)) {
+                result.ok = false;
+                result.diagnostics.push_back({
+                    package->id, feature.id, {}, {},
+                    "target:" + runtime.game_id,
+                    "This feature does not support the selected stock ROM."
+                });
+                continue;
+            }
+            for (const Resource& resource : package->resources) {
+                if (resource.feature_id != feature.id) continue;
+                if (!resource.required) continue;
+                std::string status;
+                const std::string path =
+                    resource_path(runtime, *package, feature, resource);
+                if (!validate_resource_file(resource, path, &status)) {
+                    result.ok = false;
+                    result.diagnostics.push_back({
+                        package->id, feature.id, {}, {},
+                        "resource:" + resource.id,
+                        status
+                    });
+                }
+            }
+            for (const std::string& plugin_id : feature.plugins) {
+                const auto registered = registered_plugins().find(plugin_id);
+                if (registered == registered_plugins().end() ||
+                    !registered->second.activation) {
+                    result.ok = false;
+                    result.diagnostics.push_back({
+                        package->id, feature.id, {}, {},
+                        "plugin:" + plugin_id,
+                        "The executable does not provide this trusted plugin."
+                    });
+                    continue;
+                }
+                ResolvedPlugin candidate{
+                    plugin_id, package->id, feature.id,
+                    registered->second.activation
+                };
+                const auto prior = claimed.find(plugin_id);
+                if (prior != claimed.end()) {
+                    result.ok = false;
+                    result.diagnostics.push_back({
+                        package->id, feature.id,
+                        prior->second.package_id, prior->second.feature_id,
+                        "plugin:" + plugin_id,
+                        "Two enabled features claim the same trusted plugin."
+                    });
+                    result.diagnostics.push_back({
+                        prior->second.package_id, prior->second.feature_id,
+                        package->id, feature.id,
+                        "plugin:" + plugin_id,
+                        "Two enabled features claim the same trusted plugin."
+                    });
+                    continue;
+                }
+                claimed.emplace(plugin_id, candidate);
+            }
+        }
+    }
+    for (const auto& [id, plugin] : claimed) {
+        (void)id;
+        result.plugins.push_back(plugin);
+    }
+    return result;
+}
+
+bool scan(Runtime& runtime, std::string* error) {
+    runtime.packages.clear();
+    const fs::path packages_root = runtime.root / "packages";
+    std::error_code ec;
+    fs::create_directories(packages_root, ec);
+    if (ec) {
+        set_error(error, "cannot create mods directory: " + ec.message());
+        return false;
+    }
+    for (const fs::directory_entry& package_dir :
+         fs::directory_iterator(packages_root, ec)) {
+        if (ec) break;
+        if (!package_dir.is_directory()) continue;
+        for (const fs::directory_entry& version_dir :
+             fs::directory_iterator(package_dir.path(), ec)) {
+            if (ec) break;
+            if (!version_dir.is_directory()) continue;
+            const fs::path manifest = version_dir.path() / "manifest.toml";
+            if (!fs::is_regular_file(manifest)) continue;
+            Package package;
+            if (!read_manifest(manifest, package, error)) return false;
+            if (package.id != package_dir.path().filename().string() ||
+                package.version != version_dir.path().filename().string()) {
+                set_error(error, "package directory does not match manifest: " +
+                                 manifest.string());
+                return false;
+            }
+            if (package.id == kCoveragePackage) {
+                set_error(error, "Coverage Capture is an engine-owned mod; it cannot be replaced by a package.");
+                return false;
+            }
+            package.root = version_dir.path();
+            runtime.packages[package.id][package.version] = std::move(package);
+        }
+        if (ec) break;
+    }
+    if (ec) {
+        set_error(error, "cannot scan mods directory: " + ec.message());
+        return false;
+    }
+    Package diagnostic;
+    diagnostic.builtin_diagnostic = true;
+    diagnostic.id = kCoveragePackage;
+    diagnostic.version = "1.0.0";
+    diagnostic.name = "Developer diagnostics";
+    diagnostic.author = "snesrecomp";
+    diagnostic.description = "Local diagnostics shared by every SNES game.";
+    diagnostic.targets.push_back({runtime.game_id, runtime.rom_sha256});
+    Feature capture;
+    capture.id = "capture";
+    capture.name = "Coverage Capture";
+    capture.group = "Developer";
+    capture.description = "Record interpreted code and AOT candidates to local files. "
+                          "Checkpoints are saved automatically during play and on exit.";
+    diagnostic.features.push_back(capture);
+    runtime.packages[diagnostic.id][diagnostic.version] = std::move(diagnostic);
+    return true;
+}
+
+bool load_state(Runtime& runtime, std::string* error) {
+    runtime.selections.clear();
+    runtime.shared_resources.clear();
+    const fs::path path = runtime.root / "state.toml";
+    if (!fs::exists(path)) return true;
+    std::ifstream file(path);
+    if (!file) {
+        set_error(error, "cannot read mod state");
+        return false;
+    }
+    enum class Section { Root, Package, Feature, Values, Resource, SharedResource };
+    Section section = Section::Root;
+    std::string current_package;
+    std::string current_feature;
+    std::string current_resource;
+    std::string raw;
+    while (std::getline(file, raw)) {
+        const std::string line = trim(strip_comment(raw));
+        if (line.empty()) continue;
+        if (line == "[[shared_resource]]") {
+            section = Section::SharedResource;
+            current_resource.clear();
+            continue;
+        }
+        if (line == "[[package]]") {
+            section = Section::Package;
+            current_package.clear();
+            current_feature.clear();
+            current_resource.clear();
+            continue;
+        }
+        if (line == "[[feature]]") {
+            section = Section::Feature;
+            current_package.clear();
+            current_feature.clear();
+            current_resource.clear();
+            continue;
+        }
+        if (line == "[[resource]]") {
+            section = Section::Resource;
+            current_package.clear();
+            current_feature.clear();
+            current_resource.clear();
+            continue;
+        }
+        if (line == "[feature.values]") {
+            section = Section::Values;
+            continue;
+        }
+        const size_t equals = line.find('=');
+        if (equals == std::string::npos) continue;
+        const std::string key = trim(line.substr(0, equals));
+        const std::string value = trim(line.substr(equals + 1));
+        std::string parsed;
+        bool enabled = false;
+        if (section == Section::Root) continue;
+        if (section == Section::Package) {
+            if (key == "id" && parse_string(value, current_package)) {
+                runtime.selections[current_package];
+            } else if (key == "version" && !current_package.empty() &&
+                       parse_string(value, parsed)) {
+                runtime.selections[current_package].version = parsed;
+            }
+            continue;
+        }
+        if (section == Section::Feature) {
+            if (key == "package_id" && parse_string(value, current_package)) {
+                runtime.selections[current_package];
+            } else if (key == "id" && parse_string(value, current_feature)) {
+                if (!current_package.empty())
+                    runtime.selections[current_package].features[current_feature];
+            } else if (key == "enabled" && !current_package.empty() &&
+                       !current_feature.empty() &&
+                       parse_bool(value, enabled)) {
+                FeatureSelection& selection =
+                    runtime.selections[current_package].features[current_feature];
+                selection.enabled = enabled;
+                selection.has_enabled = true;
+            }
+            continue;
+        }
+        if (section == Section::Values && !current_package.empty() &&
+            !current_feature.empty() && parse_string(value, parsed)) {
+            runtime.selections[current_package]
+                .features[current_feature].values[key] = parsed;
+            continue;
+        }
+        if (section == Section::SharedResource) {
+            if (key == "id") parse_string(value, current_resource);
+            else if (key == "path" && !current_resource.empty() && parse_string(value, parsed))
+                runtime.shared_resources[current_resource] = parsed;
+            continue;
+        }
+        if (section == Section::Resource) {
+            if (key == "package_id" && parse_string(value, current_package)) {
+                runtime.selections[current_package];
+            } else if (key == "feature_id" &&
+                       parse_string(value, current_feature)) {
+                if (!current_package.empty())
+                    runtime.selections[current_package].features[current_feature];
+            } else if (key == "id" && parse_string(value, parsed)) {
+                current_resource = parsed;
+                if (!current_package.empty() && current_feature.empty()) {
+                    const Package* package =
+                        selected_package(runtime, current_package);
+                    if (package) {
+                        for (const Feature& feature : package->features) {
+                            if (find_resource(*package, feature.id, parsed)) {
+                                current_feature = feature.id;
+                                runtime.selections[current_package]
+                                    .features[current_feature];
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!current_package.empty() && !current_feature.empty())
+                    runtime.selections[current_package]
+                        .features[current_feature].resources[current_resource];
+            } else if (key == "path" && parse_string(value, parsed) &&
+                       !current_package.empty() && !current_feature.empty() &&
+                       !current_resource.empty()) {
+                    runtime.selections[current_package]
+                        .features[current_feature]
+                        .resources[current_resource] = parsed;
+            }
+        }
+    }
+    return true;
+}
+
+std::string quote_toml(const std::string& value) {
+    std::string out = "\"";
+    for (char c : value) {
+        if (c == '\\' || c == '"') out.push_back('\\');
+        if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else out.push_back(c);
+    }
+    out.push_back('"');
+    return out;
+}
+
+bool save_state(Runtime& runtime, std::string* error) {
+    /* A lobby's plan lasts only for that session. Owner-selected ROM paths
+     * are still local durable preferences, never part of the network plan. */
+    auto saved = runtime.temporary_selection ? runtime.offline_selections : runtime.selections;
+    if (runtime.temporary_selection) {
+        for (const auto& [id, package] : runtime.selections)
+            for (const auto& [fid, feature] : package.features)
+                saved[id].features[fid].resources = feature.resources;
+    }
+    std::error_code ec;
+    fs::create_directories(runtime.root, ec);
+    const fs::path temp = runtime.root / "state.toml.tmp";
+    const fs::path output = runtime.root / "state.toml";
+    std::ofstream file(temp, std::ios::trunc);
+    if (!file) {
+        set_error(error, "cannot write mod state");
+        return false;
+    }
+    file << "format_version = 1\n";
+    for (const auto& [key, path] : runtime.shared_resources)
+        file << "\n[[shared_resource]]\nid = " << quote_toml(key)
+             << "\npath = " << quote_toml(path) << "\n";
+    for (const auto& [package_id, selection] : saved) {
+        file << "\n[[package]]\nid = " << quote_toml(package_id)
+             << "\nversion = " << quote_toml(selection.version) << "\n";
+    }
+    for (const auto& [package_id, selection] : saved) {
+        for (const auto& [feature_id, feature] : selection.features) {
+            file << "\n[[feature]]\npackage_id = " << quote_toml(package_id)
+                 << "\nid = " << quote_toml(feature_id)
+                 << "\nenabled = " << (feature.enabled ? "true" : "false")
+                 << "\n";
+            if (!feature.values.empty()) {
+                file << "\n[feature.values]\n";
+                for (const auto& [key, value] : feature.values)
+                    file << key << " = " << quote_toml(value) << "\n";
+            }
+            for (const auto& [resource_id, path] : feature.resources) {
+                if (path.empty()) continue;
+                file << "\n[[resource]]\npackage_id = "
+                     << quote_toml(package_id)
+                     << "\nfeature_id = " << quote_toml(feature_id)
+                     << "\nid = " << quote_toml(resource_id)
+                     << "\npath = " << quote_toml(path) << "\n";
+            }
+        }
+    }
+    file.close();
+    if (!file) {
+        set_error(error, "cannot finish writing mod state");
+        return false;
+    }
+    fs::rename(temp, output, ec);
+    if (ec) {
+        fs::remove(output, ec);
+        ec.clear();
+        fs::rename(temp, output, ec);
+    }
+    if (ec) {
+        set_error(error, "cannot publish mod state: " + ec.message());
+        return false;
+    }
+    return true;
+}
+
+bool read_file(const fs::path& path, std::vector<uint8_t>& out,
+               std::string* error) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        set_error(error, "cannot open " + path.string());
+        return false;
+    }
+    in.seekg(0, std::ios::end);
+    const std::streamoff size = in.tellg();
+    if (size < 0 || (uint64_t)size > kMaxArchiveBytes) {
+        set_error(error, "archive is too large");
+        return false;
+    }
+    in.seekg(0);
+    out.resize((size_t)size);
+    if (!out.empty() && !in.read((char*)out.data(), size)) {
+        set_error(error, "cannot read " + path.string());
+        return false;
+    }
+    return true;
+}
+
+uint16_t le16(const uint8_t* p) {
+    return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+}
+
+uint32_t le32(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+struct ZipEntry {
+    std::string name;
+    uint16_t method = 0;
+    uint32_t crc = 0;
+    uint32_t compressed_size = 0;
+    uint32_t size = 0;
+    uint32_t local_offset = 0;
+    bool directory = false;
+};
+
+bool safe_archive_name(const std::string& name) {
+    if (name.empty() || name.size() > 512 ||
+        name[0] == '/' || name[0] == '\\')
+        return false;
+    if (name.size() >= 2 &&
+        std::isalpha((unsigned char)name[0]) && name[1] == ':')
+        return false;
+    const fs::path path = fs::path(name).lexically_normal();
+    for (const auto& part : path) {
+        const std::string text = part.string();
+        if (text == ".." || text == "." || text.empty()) return false;
+    }
+    return true;
+}
+
+bool parse_zip(const std::vector<uint8_t>& bytes,
+               std::vector<ZipEntry>& entries, std::string* error) {
+    if (bytes.size() < 22) {
+        set_error(error, "not a ZIP archive");
+        return false;
+    }
+    size_t eocd = std::string::npos;
+    const size_t floor = bytes.size() > 65557 ? bytes.size() - 65557 : 0;
+    for (size_t pos = bytes.size() - 22;; --pos) {
+        if (le32(bytes.data() + pos) == 0x06054b50u) {
+            eocd = pos;
+            break;
+        }
+        if (pos == floor) break;
+    }
+    if (eocd == std::string::npos) {
+        set_error(error, "ZIP end record is missing");
+        return false;
+    }
+    const uint16_t count = le16(bytes.data() + eocd + 10);
+    const uint32_t central_size = le32(bytes.data() + eocd + 12);
+    const uint32_t central_offset = le32(bytes.data() + eocd + 16);
+    if (count > kMaxArchiveFiles ||
+        (uint64_t)central_offset + central_size > bytes.size()) {
+        set_error(error, "ZIP central directory is invalid");
+        return false;
+    }
+    size_t at = central_offset;
+    uint64_t expanded = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (at + 46 > bytes.size() ||
+            le32(bytes.data() + at) != 0x02014b50u) {
+            set_error(error, "ZIP entry record is invalid");
+            return false;
+        }
+        const uint16_t flags = le16(bytes.data() + at + 8);
+        ZipEntry entry;
+        entry.method = le16(bytes.data() + at + 10);
+        entry.crc = le32(bytes.data() + at + 16);
+        entry.compressed_size = le32(bytes.data() + at + 20);
+        entry.size = le32(bytes.data() + at + 24);
+        const uint16_t name_len = le16(bytes.data() + at + 28);
+        const uint16_t extra_len = le16(bytes.data() + at + 30);
+        const uint16_t comment_len = le16(bytes.data() + at + 32);
+        entry.local_offset = le32(bytes.data() + at + 42);
+        if ((flags & 1u) || (entry.method != 0 && entry.method != 8)) {
+            set_error(error, (flags & 1u)
+                ? "encrypted ZIP entries are not supported"
+                : "ZIP compression method is not supported");
+            return false;
+        }
+        if (at + 46ull + name_len + extra_len + comment_len > bytes.size()) {
+            set_error(error, "ZIP entry name is truncated");
+            return false;
+        }
+        entry.name.assign((const char*)bytes.data() + at + 46, name_len);
+        std::replace(entry.name.begin(), entry.name.end(), '\\', '/');
+        entry.directory = !entry.name.empty() && entry.name.back() == '/';
+        const std::string checked = entry.directory
+            ? entry.name.substr(0, entry.name.size() - 1) : entry.name;
+        if (!safe_archive_name(checked)) {
+            set_error(error, "unsafe ZIP path: " + entry.name);
+            return false;
+        }
+        expanded += entry.size;
+        if (expanded > kMaxArchiveBytes) {
+            set_error(error, "expanded archive exceeds the size limit");
+            return false;
+        }
+        entries.push_back(std::move(entry));
+        at += 46ull + name_len + extra_len + comment_len;
+    }
+    return true;
+}
+
+struct DeflateBits {
+    const uint8_t* at = nullptr;
+    const uint8_t* end = nullptr;
+    uint64_t hold = 0;
+    unsigned bits = 0;
+
+    bool read(unsigned count, uint32_t& out) {
+        while (bits < count) {
+            if (at == end) return false;
+            hold |= (uint64_t)*at++ << bits;
+            bits += 8;
+        }
+        out = count == 32 ? (uint32_t)hold :
+              (uint32_t)(hold & ((1ull << count) - 1));
+        hold >>= count;
+        bits -= count;
+        return true;
+    }
+    void align_byte() {
+        const unsigned drop = bits & 7u;
+        hold >>= drop;
+        bits -= drop;
+    }
+};
+
+struct DeflateHuffman {
+    std::array<uint16_t, 16> count{};
+    std::vector<uint16_t> symbols;
+};
+
+bool build_huffman(const std::vector<uint8_t>& lengths,
+                   DeflateHuffman& out) {
+    out = {};
+    for (uint8_t length : lengths) {
+        if (length > 15) return false;
+        out.count[length]++;
+    }
+    if (out.count[0] == lengths.size()) return false;
+    int left = 1;
+    for (int length = 1; length <= 15; ++length) {
+        left <<= 1;
+        left -= out.count[(size_t)length];
+        if (left < 0) return false;
+    }
+    std::array<uint16_t, 16> offsets{};
+    for (size_t length = 1; length < 15; ++length)
+        offsets[length + 1] = offsets[length] + out.count[length];
+    out.symbols.resize(lengths.size() - out.count[0]);
+    for (uint16_t symbol = 0; symbol < lengths.size(); ++symbol)
+        if (lengths[symbol])
+            out.symbols[offsets[lengths[symbol]]++] = symbol;
+    return true;
+}
+
+bool decode_symbol(DeflateBits& bits, const DeflateHuffman& table,
+                   uint16_t& symbol) {
+    uint32_t code = 0;
+    uint32_t first = 0;
+    uint32_t index = 0;
+    for (uint32_t length = 1; length <= 15; ++length) {
+        uint32_t bit = 0;
+        if (!bits.read(1, bit)) return false;
+        code |= bit;
+        const uint32_t count = table.count[length];
+        if (code < first + count) {
+            const uint32_t slot = index + code - first;
+            if (slot >= table.symbols.size()) return false;
+            symbol = table.symbols[slot];
+            return true;
+        }
+        index += count;
+        first = (first + count) << 1;
+        code <<= 1;
+    }
+    return false;
+}
+
+bool inflate_deflate(const uint8_t* data, size_t size, size_t expected,
+                     std::vector<uint8_t>& out) {
+    static const uint16_t length_base[29] = {
+        3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,
+        115,131,163,195,227,258};
+    static const uint8_t length_extra[29] = {
+        0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0};
+    static const uint16_t distance_base[30] = {
+        1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,
+        1025,1537,2049,3073,4097,6145,8193,12289,16385,24577};
+    static const uint8_t distance_extra[30] = {
+        0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,
+        12,12,13,13};
+    DeflateBits input{data, data + size};
+    out.clear();
+    out.reserve(expected);
+    bool final = false;
+    while (!final) {
+        uint32_t final_bit = 0;
+        uint32_t type = 0;
+        if (!input.read(1, final_bit) || !input.read(2, type)) return false;
+        final = final_bit != 0;
+        if (type == 0) {
+            input.align_byte();
+            uint32_t length = 0;
+            uint32_t complement = 0;
+            if (!input.read(16, length) || !input.read(16, complement) ||
+                (length ^ 0xffffu) != complement ||
+                out.size() + length > expected)
+                return false;
+            for (uint32_t i = 0; i < length; ++i) {
+                uint32_t byte = 0;
+                if (!input.read(8, byte)) return false;
+                out.push_back((uint8_t)byte);
+            }
+            continue;
+        }
+        if (type == 3) return false;
+        std::vector<uint8_t> literal_lengths;
+        std::vector<uint8_t> distance_lengths;
+        if (type == 1) {
+            literal_lengths.resize(288);
+            for (size_t i = 0; i <= 143; ++i) literal_lengths[i] = 8;
+            for (size_t i = 144; i <= 255; ++i) literal_lengths[i] = 9;
+            for (size_t i = 256; i <= 279; ++i) literal_lengths[i] = 7;
+            for (size_t i = 280; i <= 287; ++i) literal_lengths[i] = 8;
+            distance_lengths.assign(32, 5);
+        } else {
+            uint32_t hlit = 0;
+            uint32_t hdist = 0;
+            uint32_t hclen = 0;
+            if (!input.read(5, hlit) || !input.read(5, hdist) ||
+                !input.read(4, hclen))
+                return false;
+            hlit += 257;
+            hdist += 1;
+            hclen += 4;
+            static const uint8_t order[19] =
+                {16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15};
+            std::vector<uint8_t> code_lengths(19, 0);
+            for (uint32_t i = 0; i < hclen; ++i) {
+                uint32_t value = 0;
+                if (!input.read(3, value)) return false;
+                code_lengths[order[i]] = (uint8_t)value;
+            }
+            DeflateHuffman code_table;
+            if (!build_huffman(code_lengths, code_table)) return false;
+            std::vector<uint8_t> lengths;
+            lengths.reserve(hlit + hdist);
+            while (lengths.size() < hlit + hdist) {
+                uint16_t symbol = 0;
+                if (!decode_symbol(input, code_table, symbol)) return false;
+                if (symbol <= 15) {
+                    lengths.push_back((uint8_t)symbol);
+                    continue;
+                }
+                uint32_t repeat = 0;
+                uint32_t extra = 0;
+                uint8_t value = 0;
+                if (symbol == 16) {
+                    if (lengths.empty() || !input.read(2, extra)) return false;
+                    repeat = extra + 3;
+                    value = lengths.back();
+                } else if (symbol == 17) {
+                    if (!input.read(3, extra)) return false;
+                    repeat = extra + 3;
+                } else if (symbol == 18) {
+                    if (!input.read(7, extra)) return false;
+                    repeat = extra + 11;
+                } else {
+                    return false;
+                }
+                if (lengths.size() + repeat > hlit + hdist) return false;
+                lengths.insert(lengths.end(), repeat, value);
+            }
+            literal_lengths.assign(lengths.begin(), lengths.begin() + hlit);
+            distance_lengths.assign(lengths.begin() + hlit, lengths.end());
+        }
+        DeflateHuffman literals;
+        DeflateHuffman distances;
+        if (!build_huffman(literal_lengths, literals) ||
+            !build_huffman(distance_lengths, distances))
+            return false;
+        for (;;) {
+            uint16_t symbol = 0;
+            if (!decode_symbol(input, literals, symbol)) return false;
+            if (symbol < 256) {
+                if (out.size() >= expected) return false;
+                out.push_back((uint8_t)symbol);
+                continue;
+            }
+            if (symbol == 256) break;
+            if (symbol < 257 || symbol > 285) return false;
+            const unsigned length_index = symbol - 257;
+            uint32_t extra = 0;
+            if (!input.read(length_extra[length_index], extra)) return false;
+            const size_t length = length_base[length_index] + extra;
+            uint16_t distance_symbol = 0;
+            if (!decode_symbol(input, distances, distance_symbol) ||
+                distance_symbol >= 30)
+                return false;
+            if (!input.read(distance_extra[distance_symbol], extra)) return false;
+            const size_t distance = distance_base[distance_symbol] + extra;
+            if (distance == 0 || distance > out.size() ||
+                out.size() + length > expected)
+                return false;
+            for (size_t i = 0; i < length; ++i)
+                out.push_back(out[out.size() - distance]);
+        }
+    }
+    return out.size() == expected;
+}
+
+bool extract_zip(const std::vector<uint8_t>& bytes,
+                 const std::vector<ZipEntry>& entries,
+                 const fs::path& target, std::string* error) {
+    std::error_code ec;
+    fs::create_directories(target, ec);
+    if (ec) {
+        set_error(error, "cannot create staging directory: " + ec.message());
+        return false;
+    }
+    for (const ZipEntry& entry : entries) {
+        const fs::path output = target / fs::path(entry.name);
+        if (entry.directory) {
+            fs::create_directories(output, ec);
+            if (ec) {
+                set_error(error, "cannot create archive directory: " +
+                                 ec.message());
+                return false;
+            }
+            continue;
+        }
+        if ((uint64_t)entry.local_offset + 30 > bytes.size() ||
+            le32(bytes.data() + entry.local_offset) != 0x04034b50u) {
+            set_error(error, "ZIP local entry is invalid");
+            return false;
+        }
+        const uint16_t name_len =
+            le16(bytes.data() + entry.local_offset + 26);
+        const uint16_t extra_len =
+            le16(bytes.data() + entry.local_offset + 28);
+        const uint64_t data_at =
+            (uint64_t)entry.local_offset + 30 + name_len + extra_len;
+        if (data_at + entry.compressed_size > bytes.size()) {
+            set_error(error, "ZIP entry payload is invalid");
+            return false;
+        }
+        const uint8_t* compressed = bytes.data() + data_at;
+        std::vector<uint8_t> expanded;
+        const uint8_t* data = compressed;
+        if (entry.method == 0) {
+            if (entry.compressed_size != entry.size) {
+                set_error(error, "stored ZIP entry has inconsistent size");
+                return false;
+            }
+        } else {
+            if (!inflate_deflate(compressed, entry.compressed_size,
+                                 entry.size, expanded)) {
+                set_error(error, "cannot inflate ZIP entry: " + entry.name);
+                return false;
+            }
+            data = expanded.data();
+        }
+        if (crc32_compute(data, entry.size) != entry.crc) {
+            set_error(error, "ZIP entry checksum failed: " + entry.name);
+            return false;
+        }
+        fs::create_directories(output.parent_path(), ec);
+        if (ec) {
+            set_error(error, "cannot create archive parent directory: " +
+                             ec.message());
+            return false;
+        }
+        std::ofstream file(output, std::ios::binary | std::ios::trunc);
+        if (!file || (entry.size &&
+                      !file.write((const char*)data, entry.size))) {
+            set_error(error, "cannot extract archive entry: " + entry.name);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* ---- STORE-only ZIP32 writer -------------------------------------------
+ *
+ * The reader above handles STORE and DEFLATE; this writes STORE only. A mod
+ * package is a manifest and a handful of small assets, so the bytes saved by
+ * compressing them do not pay for a deflate encoder that would then need its
+ * own correctness argument. The lobby protocol specifies STORE zip32 anyway.
+ *
+ * Everything it produces must satisfy parse_zip() on the far side, including
+ * safe_archive_name() -- so names are relative, '/'-separated, and never
+ * absolute or dotted. */
+void put16(std::vector<uint8_t>& v, uint16_t x) {
+    v.push_back((uint8_t)(x & 0xFF));
+    v.push_back((uint8_t)(x >> 8));
+}
+
+void put32(std::vector<uint8_t>& v, uint32_t x) {
+    v.push_back((uint8_t)(x & 0xFF));
+    v.push_back((uint8_t)((x >> 8) & 0xFF));
+    v.push_back((uint8_t)((x >> 16) & 0xFF));
+    v.push_back((uint8_t)((x >> 24) & 0xFF));
+}
+
+struct OutEntry {
+    std::string name;
+    uint32_t crc;
+    uint32_t size;
+    uint32_t local_offset;
+};
+
+bool zip_store_tree(const fs::path& root, std::vector<uint8_t>& out,
+                    std::string* error) {
+    std::vector<OutEntry> entries;
+    std::error_code ec;
+    std::vector<fs::path> files;
+
+    for (fs::recursive_directory_iterator it(root, ec), end; it != end;
+         it.increment(ec)) {
+        if (ec) {
+            set_error(error, "cannot walk the package: " + ec.message());
+            return false;
+        }
+        if (it->is_regular_file(ec)) files.push_back(it->path());
+    }
+    /* Sorted so the same package always produces byte-identical bytes, which
+     * is what lets a digest of the archive mean anything to two machines. */
+    std::sort(files.begin(), files.end());
+    if (files.empty()) {
+        set_error(error, "package directory is empty");
+        return false;
+    }
+    if (files.size() > kMaxArchiveFiles) {
+        set_error(error, "package has too many files");
+        return false;
+    }
+
+    for (const fs::path& file : files) {
+        const fs::path rel = fs::relative(file, root, ec);
+        if (ec || rel.empty()) {
+            set_error(error, "cannot relativize " + file.string());
+            return false;
+        }
+        std::string name = rel.generic_string();
+        if (!safe_archive_name(name)) {
+            set_error(error, "unsafe path in package: " + name);
+            return false;
+        }
+        std::vector<uint8_t> data;
+        if (!read_file(file, data, error)) return false;
+        if (out.size() + data.size() > kMaxArchiveBytes) {
+            set_error(error, "package exceeds the archive size limit");
+            return false;
+        }
+
+        OutEntry e;
+        e.name = name;
+        e.crc = crc32_compute(data.data(), data.size());
+        e.size = (uint32_t)data.size();
+        e.local_offset = (uint32_t)out.size();
+
+        put32(out, 0x04034b50u);          /* local file header */
+        put16(out, 20);                   /* version needed */
+        put16(out, 0);                    /* flags */
+        put16(out, 0);                    /* method: STORE */
+        put16(out, 0);                    /* mod time  */
+        put16(out, 0);                    /* mod date  */
+        put32(out, e.crc);
+        put32(out, e.size);               /* compressed == uncompressed */
+        put32(out, e.size);
+        put16(out, (uint16_t)name.size());
+        put16(out, 0);                    /* extra len */
+        out.insert(out.end(), name.begin(), name.end());
+        out.insert(out.end(), data.begin(), data.end());
+        entries.push_back(e);
+    }
+
+    const uint32_t cd_offset = (uint32_t)out.size();
+    for (const OutEntry& e : entries) {
+        put32(out, 0x02014b50u);          /* central directory header */
+        put16(out, 20);                   /* version made by */
+        put16(out, 20);                   /* version needed */
+        put16(out, 0);
+        put16(out, 0);                    /* STORE */
+        put16(out, 0);
+        put16(out, 0);
+        put32(out, e.crc);
+        put32(out, e.size);
+        put32(out, e.size);
+        put16(out, (uint16_t)e.name.size());
+        put16(out, 0);                    /* extra */
+        put16(out, 0);                    /* comment */
+        put16(out, 0);                    /* disk */
+        put16(out, 0);                    /* internal attrs */
+        put32(out, 0);                    /* external attrs */
+        put32(out, e.local_offset);
+        out.insert(out.end(), e.name.begin(), e.name.end());
+    }
+    const uint32_t cd_size = (uint32_t)out.size() - cd_offset;
+
+    put32(out, 0x06054b50u);              /* end of central directory */
+    put16(out, 0);
+    put16(out, 0);
+    put16(out, (uint16_t)entries.size());
+    put16(out, (uint16_t)entries.size());
+    put32(out, cd_size);
+    put32(out, cd_offset);
+    put16(out, 0);                        /* comment length */
+    return true;
+}
+
+std::string hex32(const uint8_t digest[32]);
+
+/* See the forward declaration above cosmetic_allowed for why this is stable
+ * across machines. Memoised because a queue gate asks once per attempt and
+ * packing a tree is real work; the cache is keyed by id@version, so an
+ * install or a version change cannot be answered from a stale entry. */
+bool package_digest(Runtime& runtime, const std::string& package_id,
+                    const std::string& version, std::string& out) {
+    const std::string key = package_id + "@" + version;
+    const auto hit = runtime.digest_cache.find(key);
+    if (hit != runtime.digest_cache.end()) {
+        out = hit->second;
+        return !out.empty();
+    }
+    /* Cache the failure too, as an empty string: a package that cannot be
+     * packed will not start packing on the next call either, and a queue gate
+     * that retries every frame should not retry the walk every frame. */
+    runtime.digest_cache[key] = std::string();
+
+    const auto by_id = runtime.packages.find(package_id);
+    if (by_id == runtime.packages.end()) return false;
+    const auto by_ver = by_id->second.find(version);
+    if (by_ver == by_id->second.end()) return false;
+
+    std::vector<uint8_t> bytes;
+    if (!zip_store_tree(by_ver->second.root, bytes, nullptr)) return false;
+
+    uint8_t digest[32];
+    sha256_compute(bytes.data(), bytes.size(), digest);
+    out = hex32(digest);
+    runtime.digest_cache[key] = out;
+    return true;
+}
+
+std::string hex32(const uint8_t digest[32]) {
+    static const char* kHex = "0123456789abcdef";
+    std::string s;
+    s.reserve(64);
+    for (int i = 0; i < 32; ++i) {
+        s.push_back(kHex[digest[i] >> 4]);
+        s.push_back(kHex[digest[i] & 0xF]);
+    }
+    return s;
+}
+
+bool install_archive(Runtime& runtime, const fs::path& archive,
+                     std::string* installed_id,
+                     std::string* installed_version,
+                     std::string* error,
+                     bool replace_existing = false) {
+    if (archive.extension() != ".snesmod") {
+        set_error(error, "SNES mod archives must use the .snesmod extension");
+        return false;
+    }
+    std::vector<uint8_t> bytes;
+    std::vector<ZipEntry> entries;
+    if (!read_file(archive, bytes, error) ||
+        !parse_zip(bytes, entries, error))
+        return false;
+    const bool has_manifest = std::any_of(
+        entries.begin(), entries.end(),
+        [](const ZipEntry& entry) {
+            return entry.name == "manifest.toml" && !entry.directory;
+        });
+    if (!has_manifest) {
+        set_error(error, "archive has no root manifest.toml");
+        return false;
+    }
+    const uint64_t nonce = (uint64_t)
+        std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    const fs::path staging =
+        runtime.root / (".staging-" + std::to_string(nonce));
+    std::error_code ec;
+    auto cleanup = [&]() {
+        std::error_code ignored;
+        fs::remove_all(staging, ignored);
+    };
+    if (!extract_zip(bytes, entries, staging, error)) {
+        cleanup();
+        return false;
+    }
+    Package package;
+    if (!read_manifest(staging / "manifest.toml", package, error)) {
+        cleanup();
+        return false;
+    }
+    const fs::path destination =
+        runtime.root / "packages" / package.id / package.version;
+    if (fs::exists(destination)) {
+        if (!replace_existing) {
+            cleanup();
+            set_error(error, package.id + " " + package.version +
+                             " is already installed");
+            return false;
+        }
+        /* Replacing, not merging: the incoming copy is authoritative and a
+         * leftover file from the old one would travel with it. */
+        fs::remove_all(destination, ec);
+        if (ec) {
+            cleanup();
+            set_error(error, "cannot replace the installed package: " +
+                             ec.message());
+            return false;
+        }
+        ec.clear();
+    }
+    fs::create_directories(destination.parent_path(), ec);
+    if (!ec) fs::rename(staging, destination, ec);
+    if (ec) {
+        cleanup();
+        set_error(error, "cannot publish installed package: " + ec.message());
+        return false;
+    }
+    if (installed_id) *installed_id = package.id;
+    if (installed_version) *installed_version = package.version;
+    return true;
+}
+
+bool sha256_file(const fs::path& path, std::string& out,
+                 std::string* error) {
+    std::vector<uint8_t> bytes;
+    if (!read_file(path, bytes, error)) return false;
+    const size_t offset =
+        bytes.size() >= 512 && (bytes.size() % 0x8000u) == 512u ? 512u : 0u;
+    uint8_t digest[32];
+    sha256_compute(bytes.data() + offset, bytes.size() - offset, digest);
+    static const char hex[] = "0123456789abcdef";
+    out.resize(64);
+    for (size_t i = 0; i < 32; ++i) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 15];
+    }
+    return true;
+}
+
+/* Selection edits, wherever they come from, re-run validation. Not launcher
+ * code: the netplay paths below (install_blob, adopt_set) edit selections in
+ * a text-mode host too, and this used to sit inside the RECOMP_LAUNCHER block
+ * -- so a host built without the launcher did not compile once mods were on. */
+void refresh_validation() {
+    state().validation = validate(state());
+}
+
+#if defined(RECOMP_LAUNCHER)
+template <size_t N>
+void copy_text(char (&out)[N], const std::string& value) {
+    std::snprintf(out, N, "%s", value.c_str());
+}
+
+std::vector<const Package*> selected_packages(Runtime& runtime) {
+    std::vector<const Package*> result;
+    for (const auto& [id, versions] : runtime.packages) {
+        (void)versions;
+        const Package* package = selected_package(runtime, id);
+        if (package) result.push_back(package);
+    }
+    return result;
+}
+
+struct FeatureRef {
+    const Package* package = nullptr;
+    const Feature* feature = nullptr;
+};
+
+std::vector<FeatureRef> selected_features(Runtime& runtime) {
+    std::vector<FeatureRef> result;
+    for (const Package* package : selected_packages(runtime))
+        for (const Feature& feature : package->features)
+            result.push_back({package, &feature});
+    return result;
+}
+
+std::vector<const Package*> visible_packages(Runtime& runtime) {
+    auto packages = selected_packages(runtime);
+    packages.erase(std::remove_if(packages.begin(), packages.end(), [](const Package* p) {
+        return p->builtin_diagnostic && !tier2_capture_exposed() && !tier2_capture_enabled();
+    }), packages.end());
+    return packages;
+}
+
+int provider_package_count(void*) {
+    SNES_MOD_C_BEGIN
+    return (int)visible_packages(state()).size();
+    SNES_MOD_C_END(0)
+}
+
+int provider_package_get(void*, int index,
+                         RecompLauncherCModPackage* out) {
+    SNES_MOD_C_BEGIN
+    if (!out || index < 0) return 0;
+    const auto packages = visible_packages(state());
+    if ((size_t)index >= packages.size()) return 0;
+    const Package& package = *packages[(size_t)index];
+    std::memset(out, 0, sizeof(*out));
+    copy_text(out->id, package.id);
+    copy_text(out->version, package.version);
+    copy_text(out->name, package.name);
+    copy_text(out->author, package.author);
+    copy_text(out->description, package.description);
+    copy_text(out->license, package.license);
+    out->removable = !package.builtin_diagnostic;
+    out->option_count = 0;
+    for (const Feature& feature : package.features) {
+        if (feature_enabled(state(), package, feature)) out->enabled = 1;
+        out->option_count += (int)std::count_if(
+            package.options.begin(), package.options.end(),
+            [&](const Option& option) {
+                return option.feature_id == feature.id;
+            });
+    }
+    out->has_error = std::any_of(
+        state().validation.diagnostics.begin(),
+        state().validation.diagnostics.end(),
+        [&](const Diagnostic& diagnostic) {
+            return diagnostic.package_id == package.id;
+        });
+    copy_text(out->status, out->has_error ? "Needs attention" :
+                   (out->enabled ? "Enabled" : "Installed"));
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+int provider_option_get(void*, const char*, int,
+                        RecompLauncherCModOption*) {
+    SNES_MOD_C_BEGIN
+    return 0;
+    SNES_MOD_C_END(0)
+}
+
+int provider_choice_get(void*, const char*, const char*, int,
+                        RecompLauncherCModChoice*) {
+    SNES_MOD_C_BEGIN
+    return 0;
+    SNES_MOD_C_END(0)
+}
+
+int provider_version_count(void*, const char* package_id) {
+    SNES_MOD_C_BEGIN
+    if (!package_id) return 0;
+    const auto package = state().packages.find(package_id);
+    return package == state().packages.end() ? 0 :
+                                              (int)package->second.size();
+    SNES_MOD_C_END(0)
+}
+
+int provider_version_get(void*, const char* package_id, int index,
+                         RecompLauncherCModVersion* out) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !out || index < 0) return 0;
+    const auto package = state().packages.find(package_id);
+    if (package == state().packages.end() ||
+        (size_t)index >= package->second.size())
+        return 0;
+    auto version = package->second.begin();
+    std::advance(version, index);
+    std::memset(out, 0, sizeof(*out));
+    copy_text(out->version, version->first);
+    const Package* selected = selected_package(state(), package_id);
+    out->selected = selected && selected->version == version->first;
+    out->removable = !out->selected;
+    if (out->selected) {
+        out->removable = std::none_of(
+            selected->features.begin(), selected->features.end(),
+            [&](const Feature& feature) {
+                return feature_enabled(state(), *selected, feature);
+            });
+    }
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+int provider_install(void*, const char* archive_path) {
+    SNES_MOD_C_BEGIN
+    if (!archive_path) return 0;
+    std::string id;
+    std::string version;
+    std::string error;
+    if (!install_archive(state(), archive_path, &id, &version, &error) ||
+        !scan(state(), &error)) {
+        state().error = error;
+        return 0;
+    }
+    state().selections[id].version = version;
+    refresh_validation();
+    state().error.clear();
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+int provider_remove(void*, const char* package_id,
+                    const char* version) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !version) return 0;
+    const Package* selected = selected_package(state(), package_id);
+    if (selected && selected->builtin_diagnostic) return 0;
+    if (selected && selected->version == version &&
+        std::any_of(selected->features.begin(), selected->features.end(),
+                    [&](const Feature& feature) {
+                        return feature_enabled(state(), *selected, feature);
+                    })) {
+        state().error = "Disable this package's features before removing it.";
+        return 0;
+    }
+    std::error_code ec;
+    const fs::path path =
+        state().root / "packages" / package_id / version;
+    if (!fs::exists(path) || !fs::remove_all(path, ec) || ec) {
+        state().error = "Cannot remove package version.";
+        return 0;
+    }
+    std::string error;
+    if (!scan(state(), &error)) {
+        state().error = error;
+        return 0;
+    }
+    refresh_validation();
+    state().error.clear();
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+int provider_enable(void*, const char* package_id, int enabled) {
+    SNES_MOD_C_BEGIN
+    if (!package_id) return 0;
+    const Package* package = selected_package(state(), package_id);
+    if (!package) return 0;
+    for (const Feature& feature : package->features) {
+        FeatureSelection& selection =
+            package_selection(state(), *package).features[feature.id];
+        selection.enabled = enabled != 0;
+        selection.has_enabled = true;
+        if (enabled) deselect_plugin_rivals(state(), *package, feature);
+    }
+    refresh_validation();
+    state().error.clear();
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+int provider_select(void*, const char* package_id,
+                    const char* version) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !version) return 0;
+    const auto package = state().packages.find(package_id);
+    if (package == state().packages.end() ||
+        package->second.find(version) == package->second.end()) {
+        state().error = "Unknown package version.";
+        return 0;
+    }
+    state().selections[package_id].version = version;
+    refresh_validation();
+    state().error.clear();
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+int provider_set_option(void*, const char*, const char*,
+                        const char*) {
+    SNES_MOD_C_BEGIN
+    state().error = "Package-level options are not used; edit the feature.";
+    return 0;
+    SNES_MOD_C_END(0)
+}
+
+int provider_commit(void*, const char* image_path) {
+    SNES_MOD_C_BEGIN
+    std::string error;
+    if (!mod_runtime_commit(
+            image_path ? fs::path(image_path) : fs::path(), &error)) {
+        state().error = error;
+        return 0;
+    }
+    state().error.clear();
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+const char* provider_error(void*) {
+    SNES_MOD_C_BEGIN
+    return state().error.c_str();
+    SNES_MOD_C_END(nullptr)
+}
+
+int provider_feature_count(void*) {
+    SNES_MOD_C_BEGIN
+    return (int)selected_features(state()).size();
+    SNES_MOD_C_END(0)
+}
+
+int provider_feature_get(void*, int index,
+                         RecompLauncherCModFeature* out) {
+    SNES_MOD_C_BEGIN
+    if (!out || index < 0) return 0;
+    const auto features = selected_features(state());
+    if ((size_t)index >= features.size()) return 0;
+    const Package& package = *features[(size_t)index].package;
+    const Feature& feature = *features[(size_t)index].feature;
+    std::memset(out, 0, sizeof(*out));
+    copy_text(out->id, feature.id);
+    copy_text(out->package_id, package.id);
+    copy_text(out->package_version, package.version);
+    copy_text(out->package_name, package.name);
+    copy_text(out->name, feature.name);
+    copy_text(out->author, package.author);
+    copy_text(out->description, feature.description);
+    copy_text(out->group, feature.group);
+    out->enabled = feature_enabled(state(), package, feature);
+    if (package.builtin_diagnostic) {
+        out->hidden = !tier2_capture_exposed();
+    }
+    out->option_count = (int)std::count_if(
+        package.options.begin(), package.options.end(),
+        [&](const Option& option) {
+            return option.feature_id == feature.id;
+        });
+    out->has_error = std::any_of(
+        state().validation.diagnostics.begin(),
+        state().validation.diagnostics.end(),
+        [&](const Diagnostic& diagnostic) {
+            return diagnostic.package_id == package.id &&
+                   diagnostic.feature_id == feature.id;
+        });
+    copy_text(out->status, out->has_error ? "Needs attention" :
+                   (out->enabled ? "Enabled" : "Disabled"));
+    if (package.builtin_diagnostic) {
+        std::string status = out->enabled ? "Capturing" : "Disabled";
+        status += " ("; status += tier2_capture_setting_source(); status += ")";
+        copy_text(out->status, status);
+    }
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+int provider_feature_option_get(
+    void*, const char* package_id, const char* feature_id, int index,
+    RecompLauncherCModOption* out) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !feature_id || !out || index < 0) return 0;
+    const Package* package = selected_package(state(), package_id);
+    if (!package || !find_feature(*package, feature_id)) return 0;
+    std::vector<const Option*> options;
+    for (const Option& option : package->options)
+        if (option.feature_id == feature_id) options.push_back(&option);
+    if ((size_t)index >= options.size()) return 0;
+    const Option& option = *options[(size_t)index];
+    const Feature& feature = *find_feature(*package, feature_id);
+    std::memset(out, 0, sizeof(*out));
+    copy_text(out->id, option.id);
+    copy_text(out->label, option.label);
+    copy_text(out->description, option.description);
+    copy_text(out->group, option.group);
+    copy_text(out->value, option_value(state(), *package, feature, option));
+    copy_text(out->default_value, option.default_value);
+    out->type = option.type == OptionType::Boolean
+        ? RECOMP_MOD_OPTION_BOOLEAN
+        : option.type == OptionType::Choice
+            ? RECOMP_MOD_OPTION_CHOICE : RECOMP_MOD_OPTION_INTEGER;
+    out->min_value = option.min_value;
+    out->max_value = option.max_value;
+    out->step = option.step;
+    out->choice_count = (int)option.choices.size();
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+int provider_feature_choice_get(
+    void*, const char* package_id, const char* feature_id,
+    const char* option_id, int index, RecompLauncherCModChoice* out) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !feature_id || !option_id ||
+        !out || index < 0)
+        return 0;
+    const Package* package = selected_package(state(), package_id);
+    if (!package) return 0;
+    const Option* option =
+        find_option(*package, feature_id, option_id);
+    if (!option || (size_t)index >= option->choices.size()) return 0;
+    std::memset(out, 0, sizeof(*out));
+    copy_text(out->value, option->choices[(size_t)index].value);
+    copy_text(out->label, option->choices[(size_t)index].label);
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+#endif /* RECOMP_LAUNCHER */
+
+/* The two selection editors double as the netplay adopt-set path (a peer
+ * taking on the host's mod set), so they exist with or without the launcher;
+ * the provider table below merely points at them. */
+int provider_feature_enable(void*, const char* package_id,
+                            const char* feature_id, int enabled) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !feature_id) return 0;
+    const Package* package = selected_package(state(), package_id);
+    const Feature* feature = package ? find_feature(*package, feature_id) : nullptr;
+    if (!feature) return 0;
+    FeatureSelection& selection =
+        package_selection(state(), *package).features[feature_id];
+    selection.enabled = enabled != 0;
+    selection.has_enabled = true;
+    if (package->builtin_diagnostic) tier2_capture_set_selection(enabled);
+    if (enabled) deselect_plugin_rivals(state(), *package, *feature);
+    refresh_validation();
+    state().error.clear();
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+int provider_feature_set_option(
+    void*, const char* package_id, const char* feature_id,
+    const char* option_id, const char* value) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !feature_id || !option_id || !value) return 0;
+    const Package* package = selected_package(state(), package_id);
+    if (!package) return 0;
+    const Feature* feature = find_feature(*package, feature_id);
+    const Option* option =
+        find_option(*package, feature_id, option_id);
+    if (!feature || !option) return 0;
+    std::string error;
+    if (!validate_option_value(*option, value, &error)) {
+        state().error = error;
+        return 0;
+    }
+    package_selection(state(), *package)
+        .features[feature->id].values[option->id] = value;
+    refresh_validation();
+    state().error.clear();
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+#if defined(RECOMP_LAUNCHER)
+int provider_diagnostic_count(void*, const char* package_id,
+                              const char* feature_id) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !feature_id) return 0;
+    return (int)std::count_if(
+        state().validation.diagnostics.begin(),
+        state().validation.diagnostics.end(),
+        [&](const Diagnostic& diagnostic) {
+            return diagnostic.package_id == package_id &&
+                   diagnostic.feature_id == feature_id;
+        });
+    SNES_MOD_C_END(0)
+}
+
+int provider_diagnostic_get(
+    void*, const char* package_id, const char* feature_id,
+    int index, RecompLauncherCModDiagnostic* out) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !feature_id || !out || index < 0) return 0;
+    for (const Diagnostic& diagnostic : state().validation.diagnostics) {
+        if (diagnostic.package_id != package_id ||
+            diagnostic.feature_id != feature_id)
+            continue;
+        if (index-- != 0) continue;
+        std::memset(out, 0, sizeof(*out));
+        out->severity = RECOMP_MOD_DIAGNOSTIC_ERROR;
+        copy_text(out->resource, diagnostic.resource);
+        copy_text(out->message, diagnostic.message);
+        copy_text(out->related_package_id,
+                  diagnostic.related_package_id);
+        copy_text(out->related_feature_id,
+                  diagnostic.related_feature_id);
+        return 1;
+    }
+    return 0;
+    SNES_MOD_C_END(0)
+}
+
+int provider_feature_resource_count(void*, const char* package_id,
+                                    const char* feature_id) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !feature_id) return 0;
+    const Package* package = selected_package(state(), package_id);
+    if (!package || !find_feature(*package, feature_id)) return 0;
+    return (int)std::count_if(
+        package->resources.begin(), package->resources.end(),
+        [&](const Resource& resource) {
+            return resource.feature_id == feature_id;
+        });
+    SNES_MOD_C_END(0)
+}
+
+int provider_feature_resource_get(void*, const char* package_id,
+                                  const char* feature_id, int index,
+                                  RecompLauncherCModResource* out) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !feature_id || !out || index < 0) return 0;
+    const Package* package = selected_package(state(), package_id);
+    if (!package) return 0;
+    const Feature* feature = find_feature(*package, feature_id);
+    if (!feature) return 0;
+    std::vector<const Resource*> resources;
+    for (const Resource& resource : package->resources)
+        if (resource.feature_id == feature_id) resources.push_back(&resource);
+    if ((size_t)index >= resources.size()) return 0;
+    const Resource& resource = *resources[(size_t)index];
+    const std::string path = resource_path(state(), *package, *feature, resource);
+    std::string status;
+    const bool verified = validate_resource_file(resource, path, &status);
+    std::memset(out, 0, sizeof(*out));
+    copy_text(out->id, resource.id);
+    copy_text(out->label, resource.label);
+    copy_text(out->description, resource.description);
+    copy_text(out->path, path);
+    copy_text(out->status, status);
+    copy_text(out->format, resource.format);
+    copy_text(out->file_patterns, resource.file_patterns);
+    copy_text(out->file_description, resource.file_description);
+    out->required = resource.required ? 1 : 0;
+    out->verified = verified ? 1 : 0;
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+int provider_feature_resource_set_path(void*, const char* package_id,
+                                       const char* feature_id,
+                                       const char* resource_id,
+                                       const char* path) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !feature_id || !resource_id || !path) return 0;
+    const Package* package = selected_package(state(), package_id);
+    if (!package || !find_feature(*package, feature_id) ||
+        !find_resource(*package, feature_id, resource_id))
+        return 0;
+    const Resource* resource = find_resource(*package, feature_id, resource_id);
+    if (!resource->shared_key.empty()) state().shared_resources[resource->shared_key] = path;
+    else package_selection(state(), *package).features[feature_id].resources[resource_id] = path;
+    refresh_validation();
+    state().error.clear();
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+RecompLauncherCModProvider provider = {
+    nullptr,
+    provider_package_count,
+    provider_package_get,
+    provider_option_get,
+    provider_choice_get,
+    provider_version_count,
+    provider_version_get,
+    provider_install,
+    provider_remove,
+    provider_enable,
+    provider_select,
+    provider_set_option,
+    provider_commit,
+    provider_error,
+    provider_feature_count,
+    provider_feature_get,
+    provider_feature_option_get,
+    provider_feature_choice_get,
+    provider_feature_enable,
+    provider_feature_set_option,
+    provider_diagnostic_count,
+    provider_diagnostic_get,
+    ".snesmod",
+    "SNESRecomp mod package (.snesmod)",
+    nullptr,
+    provider_feature_resource_count,
+    provider_feature_resource_get,
+    provider_feature_resource_set_path,
+};
+#endif
+
+bool hex_to_bytes(const std::string& hex, uint8_t* out, size_t out_len) {
+    if (hex.size() != out_len * 2) return false;
+    for (size_t i = 0; i < out_len; ++i) {
+        unsigned v = 0;
+        for (int k = 0; k < 2; ++k) {
+            const char c = hex[i * 2 + (size_t)k];
+            v <<= 4;
+            if (c >= '0' && c <= '9') v |= (unsigned)(c - '0');
+            else if (c >= 'a' && c <= 'f') v |= (unsigned)(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') v |= (unsigned)(c - 'A' + 10);
+            else return false;
+        }
+        out[i] = (uint8_t)v;
+    }
+    return true;
+}
+
+void copy_c(char* dst, size_t cap, const std::string& src) {
+    std::snprintf(dst, cap, "%s", src.c_str());
+}
+
+/* Hand every package-declared [[variant]] to the content-variant registry.
+ * Availability (feature enabled, ROM selected and hashing right, patch
+ * applying) is the registry's job at refresh time; this only declares. */
+void publish_variants(Runtime& runtime) {
+    snes_variant_clear_declared();
+    for (const auto& [package_id, versions] : runtime.packages) {
+        const Package* package = selected_package(runtime, package_id);
+        if (!package) continue;
+        for (const VariantRow& row : package->variants) {
+            SnesVariantDecl decl;
+            std::memset(&decl, 0, sizeof(decl));
+            copy_c(decl.id, sizeof(decl.id), row.id);
+            copy_c(decl.display_name, sizeof(decl.display_name), row.display_name);
+            copy_c(decl.module_id, sizeof(decl.module_id), row.module_id);
+            copy_c(decl.save_namespace, sizeof(decl.save_namespace), row.save_namespace);
+            copy_c(decl.selector_group, sizeof(decl.selector_group), row.selector_group);
+            decl.selector_order = (int)row.selector_order;
+            decl.has_selector_screen = row.has_selector_screen ? 1 : 0;
+            decl.selector_wram_addr = row.selector_wram_addr;
+            decl.selector_wram_value = row.selector_wram_value;
+            copy_c(decl.package_id, sizeof(decl.package_id), package->id);
+            copy_c(decl.feature_id, sizeof(decl.feature_id), row.feature_id);
+            copy_c(decl.source_rom_id, sizeof(decl.source_rom_id), row.source_rom);
+            if (!row.source_rom.empty()) {
+                const Resource* res = find_resource(*package, row.feature_id, row.source_rom);
+                if (res && !res->sha256.empty() &&
+                    hex_to_bytes(res->sha256, decl.source_sha256, 32))
+                    decl.has_source_sha256 = 1;
+            }
+            if (!row.patch.empty()) {
+                for (const PatchRow& patch : package->patches) {
+                    if (patch.feature_id != row.feature_id || patch.id != row.patch) continue;
+                    const fs::path path = package->root / patch.file;
+                    copy_c(decl.patch_path, sizeof(decl.patch_path), path.string());
+                    if (!patch.target_sha256.empty() &&
+                        hex_to_bytes(patch.target_sha256, decl.patch_target_sha256, 32))
+                        decl.has_patch_target_sha256 = 1;
+                }
+            }
+            decl.boot.poke_count = 0;
+            for (const auto& [addr, value] : row.boot_pokes) {
+                if (decl.boot.poke_count >= SNES_BOOT_POLICY_MAX_POKES) break;
+                decl.boot.pokes[decl.boot.poke_count].addr24 = addr;
+                decl.boot.pokes[decl.boot.poke_count].value = value;
+                decl.boot.poke_count++;
+            }
+            decl.boot.entry_pc24 = row.boot_entry;
+            snes_variant_register_declared(&decl);
+        }
+    }
+}
+
+}  // namespace
+
+bool mod_runtime_initialize(const fs::path& root,
+                            const std::string& game_id,
+                            const std::string& rom_sha256,
+                            std::string* error) {
+    Runtime& runtime = state();
+    runtime = {};
+    runtime.root = root;
+    runtime.game_id = game_id;
+    runtime.rom_sha256 = rom_sha256;
+    if (game_id.empty() || !valid_sha256(rom_sha256)) {
+        set_error(error, "invalid SNES mod target identity");
+        return false;
+    }
+    if (!scan(runtime, &runtime.error) ||
+        !load_state(runtime, &runtime.error)) {
+        set_error(error, runtime.error);
+        return false;
+    }
+    runtime.validation = validate(runtime);
+    publish_variants(runtime);
+    runtime.initialized = true;
+    runtime.error.clear();
+    return true;
+}
+
+bool mod_runtime_commit(const fs::path& rom_path, std::string* error) {
+    Runtime& runtime = state();
+    if (!runtime.initialized) return true;
+    if (!rom_path.empty()) {
+        std::string digest;
+        if (!sha256_file(rom_path, digest, &runtime.error)) {
+            set_error(error, runtime.error);
+            return false;
+        }
+        if (digest != runtime.rom_sha256) {
+            runtime.error =
+                "The selected ROM does not match this mod catalog target.";
+            set_error(error, runtime.error);
+            return false;
+        }
+    }
+    runtime.validation = validate(runtime);
+    if (!runtime.validation.ok) {
+        runtime.error = "Resolve the highlighted mod conflicts before Play.";
+        set_error(error, runtime.error);
+        return false;
+    }
+    if (!save_state(runtime, &runtime.error)) {
+        set_error(error, runtime.error);
+        return false;
+    }
+    runtime.committed = runtime.validation;
+    if (!apply_committed_resource_environment(runtime, &runtime.error)) {
+        set_error(error, runtime.error);
+        return false;
+    }
+    /* Selections (package versions) may have changed; re-declare. */
+    publish_variants(runtime);
+    runtime.error.clear();
+    return true;
+}
+
+void mod_runtime_activate_plugins() {
+    Runtime& runtime = state();
+    if (!runtime.initialized) return;
+    frame_callbacks().clear();
+    apu_write_callbacks().clear();
+    synthetic_sram_size() = 0;
+    for (SNESModActivationCallback callback : reset_callbacks())
+        if (callback) callback();
+    for (const ResolvedPlugin& plugin : runtime.committed.plugins)
+        if (plugin.callback) plugin.callback();
+}
+
+#if defined(RECOMP_LAUNCHER)
+const RecompLauncherCModProvider* mod_runtime_launcher_provider() {
+    return &provider;
+}
+#endif
+
+}  // namespace SNESRecomp
+
+extern "C" int snes_mod_register_activation_plugin(
+    const char* id, SNESModActivationCallback callback) {
+    SNES_MOD_C_BEGIN
+    if (!id || !callback || !SNESRecomp::valid_id(id)) return 0;
+    auto& plugins = SNESRecomp::registered_plugins();
+    const auto prior = plugins.find(id);
+    if (prior != plugins.end() && prior->second.activation != callback)
+        return 0;
+    plugins[id].activation = callback;
+    /* Never clears an existing classification, and never sets one: a plugin
+     * is presentation-only because a build said so through the call below,
+     * and registering the ordinary way leaves it unclassified, which is the
+     * safe answer for every plugin that predates the distinction. */
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_register_presentation_plugin(
+    const char* id, SNESModActivationCallback callback) {
+    SNES_MOD_C_BEGIN
+    if (!snes_mod_register_activation_plugin(id, callback)) return 0;
+    SNESRecomp::registered_plugins()[id].presentation = true;
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_register_reset_callback(
+    SNESModActivationCallback callback) {
+    SNES_MOD_C_BEGIN
+    if (!callback) return 0;
+    auto& callbacks = SNESRecomp::reset_callbacks();
+    if (std::find(callbacks.begin(), callbacks.end(), callback) ==
+        callbacks.end())
+        callbacks.push_back(callback);
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_register_frame_callback(SNESModFrameCallback callback) {
+    SNES_MOD_C_BEGIN
+    if (!callback) return 0;
+    auto& callbacks = SNESRecomp::frame_callbacks();
+    if (std::find(callbacks.begin(), callbacks.end(), callback) ==
+        callbacks.end())
+        callbacks.push_back(callback);
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_register_apu_write_callback(
+    SNESModApuWriteCallback callback) {
+    SNES_MOD_C_BEGIN
+    if (!callback) return 0;
+    auto& callbacks = SNESRecomp::apu_write_callbacks();
+    if (std::find(callbacks.begin(), callbacks.end(), callback) ==
+        callbacks.end())
+        callbacks.push_back(callback);
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" void snes_mod_runtime_frame_tick_c(void) {
+    SNES_MOD_C_BEGIN
+    for (SNESModFrameCallback callback : SNESRecomp::frame_callbacks())
+        if (callback) callback();
+    SNES_MOD_C_END()
+}
+
+extern "C" int snes_mod_runtime_filter_apu_write_c(
+    uint16_t reg, uint8_t value) {
+    SNES_MOD_C_BEGIN
+    for (SNESModApuWriteCallback callback : SNESRecomp::apu_write_callbacks()) {
+        if (callback && callback(reg, value))
+            return 1;
+    }
+    return 0;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_request_synthetic_sram_c(uint32_t bytes) {
+    SNES_MOD_C_BEGIN
+    if (bytes < 1024 || bytes > 128 * 1024 || (bytes & (bytes - 1)) != 0)
+        return 0;
+    uint32_t& requested = SNESRecomp::synthetic_sram_size();
+    if (requested != 0 && requested != bytes)
+        return 0;
+    requested = bytes;
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" uint32_t snes_mod_runtime_synthetic_sram_size_c(void) {
+    SNES_MOD_C_BEGIN
+    return SNESRecomp::synthetic_sram_size();
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_runtime_initialize_c(
+    const char* root, const char* game_id, const char* rom_sha256) {
+    SNES_MOD_C_BEGIN
+    std::string error;
+    return SNESRecomp::mod_runtime_initialize(
+        root ? fs::path(root) : fs::path("mods"),
+        game_id ? game_id : "",
+        rom_sha256 ? rom_sha256 : "", &error) ? 1 : 0;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_runtime_commit_c(const char* rom_path) {
+    SNES_MOD_C_BEGIN
+    std::string error;
+    return SNESRecomp::mod_runtime_commit(
+        rom_path ? fs::path(rom_path) : fs::path(), &error) ? 1 : 0;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" void snes_mod_runtime_activate_plugins_c(void) {
+    SNES_MOD_C_BEGIN
+    SNESRecomp::mod_runtime_activate_plugins();
+    SNES_MOD_C_END()
+}
+
+extern "C" void snes_mod_runtime_set_rom_catalog_c(const SnesRomRevision* catalog,
+                                                   int count) {
+    SNES_MOD_C_BEGIN
+    SNESRecomp::g_rom_catalog = count > 0 ? catalog : nullptr;
+    SNESRecomp::g_rom_catalog_count = count > 0 && catalog ? count : 0;
+    ++SNESRecomp::g_rom_catalog_generation;
+    SNES_MOD_C_END()
+}
+
+extern "C" const char* snes_mod_runtime_last_error_c(void) {
+    SNES_MOD_C_BEGIN
+    return SNESRecomp::state().error.c_str();
+    SNES_MOD_C_END(nullptr)
+}
+
+extern "C" int snes_mod_runtime_feature_enabled_c(
+    const char* package_id, const char* feature_id) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !feature_id) return 0;
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    if (!runtime.initialized) return 0;
+    const SNESRecomp::Package* package =
+        SNESRecomp::selected_package(runtime, package_id);
+    if (!package) return 0;
+    const SNESRecomp::Feature* feature =
+        SNESRecomp::find_feature(*package, feature_id);
+    if (!feature) return 0;
+    return SNESRecomp::feature_enabled(runtime, *package, *feature) ? 1 : 0;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_runtime_feature_option_value_c(
+    const char* package_id, const char* feature_id, const char* option_id,
+    char* out, uint32_t cap) {
+    SNES_MOD_C_BEGIN
+    if (!package_id || !feature_id || !option_id || !out || cap == 0)
+        return 0;
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    if (!runtime.initialized) return 0;
+    const SNESRecomp::Package* package =
+        SNESRecomp::selected_package(runtime, package_id);
+    if (!package) return 0;
+    const SNESRecomp::Feature* feature =
+        SNESRecomp::find_feature(*package, feature_id);
+    const SNESRecomp::Option* option =
+        SNESRecomp::find_option(*package, feature_id, option_id);
+    if (!feature || !option) return 0;
+    const std::string value =
+        SNESRecomp::option_value(runtime, *package, *feature, *option);
+    std::snprintf(out, cap, "%s", value.c_str());
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+/*
+ * The effective mod set, as one canonical line per enabled feature.
+ *
+ * Netplay peers must agree on every mod that touches guest memory, and this is
+ * what they compare. A real match desynced because one side had localization
+ * active and the other did not -- that mod patches ROM text, RAM and VRAM in
+ * GUEST memory, so it is simulation state, not presentation.
+ *
+ * Canonical means byte-identical for equal selections on any machine:
+ *
+ *   - only ENABLED features appear; a disabled feature and an absent package
+ *     are the same thing to the simulation, and must hash alike
+ *   - only features that AFFECT THE SIMULATION appear. A feature whose
+ *     manifest declares presentation_only draws differently and simulates
+ *     identically, so including it would refuse a match over a difference
+ *     that cannot desync one -- and would make an accessibility filter
+ *     something a player has to negotiate with their opponent. See the flag's
+ *     definition for what may and may not claim it
+ *   - packages, features and options are emitted in sorted order, which
+ *     std::map gives us, so map iteration order cannot leak into the value
+ *   - the package VERSION is included: the same mod at a different version can
+ *     patch different bytes
+ *   - option values are the RESOLVED ones, not the stored ones, so a peer
+ *     relying on a manifest default and a peer that chose the same value
+ *     explicitly agree -- which is the common case and must not desync
+ *
+ * Returns the number of bytes that WOULD be written, so a caller can detect
+ * truncation rather than silently compare prefixes.
+ */
+/*
+ * The cosmetic allowlist in force for this session.
+ *
+ * WHO SETS IT. Not this machine. It comes from whoever is authoritative for
+ * the match: the automatch ruleset the SERVER published, or -- in a lobby --
+ * the host's match caps. The local build's own opinion of which of its mods
+ * are harmless is exactly the opinion that cannot be trusted, because writing
+ * `presentation_only = true` in a manifest costs a cheat author nothing.
+ *
+ * Format: ';'-separated `id@version` or `id@version#sha256`. See
+ * cosmetic_allowed for the matching rules and for the honest limits of what
+ * pinning bytes does and does not prevent.
+ *
+ * NULL or "" REVOKES EVERY EXEMPTION, and that is the correct default rather
+ * than a degenerate case. An older host, a ruleset with no such key, a server
+ * that has never heard of cosmetic mods -- each of those means "no authority
+ * has granted anything here", and the answer to that has to be no. The cost
+ * is that a player's filter counts as an ordinary mod against such a host and
+ * has to match or be switched off; the cost of the other default is that any
+ * mod on earth exempts itself by saying so.
+ *
+ * Offline, nobody calls this, nothing is exempt, and it does not matter: the
+ * exemption only ever affects what netplay compares.
+ */
+extern "C" void snes_mod_runtime_set_cosmetic_allow_c(const char* allow) {
+    SNES_MOD_C_BEGIN
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    const std::string next = allow ? allow : "";
+    if (next == runtime.cosmetic_allow) return;
+    runtime.cosmetic_allow = next;
+    /* Say it, once per change. Which mods a match treated as cosmetic is the
+     * first thing anyone will want to know after an argument about one. */
+    std::fprintf(stderr, "mods: cosmetic allowlist = %s\n",
+                 next.empty() ? "(nothing exempt)" : next.c_str());
+    SNES_MOD_C_END()
+}
+
+extern "C" int snes_mod_runtime_get_cosmetic_allow_c(char* out, uint32_t cap) {
+    SNES_MOD_C_BEGIN
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    const std::string& text = runtime.cosmetic_allow;
+    if (out && cap) std::snprintf(out, cap, "%s", text.c_str());
+    return (int)text.size();
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_runtime_package_digest_c(const char* package_id,
+                                                 const char* version,
+                                                 char* out, uint32_t cap) {
+    SNES_MOD_C_BEGIN
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    std::string digest;
+    if (out && cap) out[0] = '\0';
+    if (!package_id || !runtime.initialized) return 0;
+
+    std::string ver = version ? version : "";
+    if (ver.empty()) {
+        const SNESRecomp::Package* package =
+            SNESRecomp::selected_package(runtime, package_id);
+        if (!package) return 0;
+        ver = package->version;
+    }
+    if (!SNESRecomp::package_digest(runtime, package_id, ver, digest))
+        return 0;
+    if (out && cap) {
+        if (cap < digest.size() + 1) return 0;
+        std::memcpy(out, digest.c_str(), digest.size() + 1);
+    }
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+/*
+ * The enabled features that CLAIM the cosmetic exemption and have not been
+ * granted it, one `package@version/feature` per line.
+ *
+ * This is the queue gate's evidence. An automatch ticket asserts that no
+ * simulation-affecting mod is on beyond what the ruleset imposes, and an
+ * ungranted cosmetic claim has to count as simulation-affecting -- not
+ * because it necessarily is, but because nobody in a position to know has
+ * said otherwise. Reporting them individually is what lets the refusal name
+ * the mod instead of saying "turn off your mods".
+ *
+ * Returns the number of bytes that WOULD be written, so a caller can tell
+ * truncation from emptiness.
+ */
+/*
+ * The EVIDENCE for every exemption this build is taking, one
+ * `id@version#sha256` per package, for the server to check against its own
+ * allowlist.
+ *
+ * This exists because the automatch ticket used to carry a VERDICT -- a single
+ * `mods_enabled` boolean -- and a verdict is computed by the one machine with
+ * an interest in the answer. The server could not see what had been claimed,
+ * only whether this build had decided it was acceptable, so every rule about
+ * which mods are cosmetic ran on the client and could be changed by changing
+ * the client.
+ *
+ * Reporting the packages instead moves the DECISION to the server: it holds
+ * the allowlist, it matches these digests against it, and a package it has
+ * not approved is refused however this build classified it. A stale or
+ * patched client cannot widen its own exemptions, only misreport them -- and
+ * a misreport is now a specific false factual claim about named bytes rather
+ * than an invisible flip of a boolean.
+ *
+ * Only packages with at least one ACTUALLY exempted feature appear: the list
+ * is what is being relied on, not what might have been. Sorted (std::map
+ * iteration) so two machines in the same state produce identical text.
+ */
+extern "C" int snes_mod_runtime_exempted_packages_c(char* out, uint32_t cap) {
+    SNES_MOD_C_BEGIN
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    std::string text;
+    if (runtime.initialized) {
+        for (const auto& sel_entry : runtime.selections) {
+            const SNESRecomp::Package* package =
+                SNESRecomp::selected_package(runtime, sel_entry.first.c_str());
+            if (!package) continue;
+            bool any = false;
+            for (const SNESRecomp::Feature& feature : package->features) {
+                if (!SNESRecomp::feature_enabled(runtime, *package, feature))
+                    continue;
+                if (SNESRecomp::feature_exempt(runtime, *package, feature)) {
+                    any = true;
+                    break;
+                }
+            }
+            if (!any) continue;
+            std::string digest;
+            /* A digest we cannot compute is reported as empty rather than
+             * omitted. Dropping the row would hide an exemption from the very
+             * check this function exists to feed; an empty digest matches no
+             * pinned allowlist entry, so it fails closed at the server. */
+            SNESRecomp::package_digest(runtime, package->id, package->version,
+                                       digest);
+            text += package->id;
+            text += '@';
+            text += package->version;
+            text += '#';
+            text += digest;
+            text += '\n';
+        }
+    }
+    if (out && cap) std::snprintf(out, cap, "%s", text.c_str());
+    return (int)text.size();
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_runtime_unapproved_cosmetics_c(char* out,
+                                                       uint32_t cap) {
+    SNES_MOD_C_BEGIN
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    std::string text;
+    if (runtime.initialized) {
+        for (const auto& sel_entry : runtime.selections) {
+            const SNESRecomp::Package* package =
+                SNESRecomp::selected_package(runtime, sel_entry.first.c_str());
+            if (!package) continue;
+            for (const SNESRecomp::Feature& feature : package->features) {
+                if (!SNESRecomp::feature_enabled(runtime, *package, feature))
+                    continue;
+                /* Admissible-but-ungranted only. An INADMISSIBLE claim is
+                 * already an ordinary simulation feature everywhere that
+                 * matters -- it is in the compared set, and the set comparison
+                 * refuses it with its own message. Listing it here too would
+                 * report the same mod twice under two different reasons. */
+                if (!SNESRecomp::claim_admissible(runtime, *package, feature))
+                    continue;
+                if (SNESRecomp::cosmetic_allowed(runtime, *package)) continue;
+                text += sel_entry.first;
+                text += '@';
+                text += sel_entry.second.version;
+                text += '/';
+                text += feature.id;
+                text += '\n';
+            }
+        }
+    }
+    if (out && cap) std::snprintf(out, cap, "%s", text.c_str());
+    return (int)text.size();
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_runtime_effective_set_c(char* out, uint32_t cap) {
+    SNES_MOD_C_BEGIN
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    std::string text;
+    if (runtime.initialized) {
+        for (const auto& sel_entry : runtime.selections) {
+            const std::string& package_id = sel_entry.first;
+            const SNESRecomp::PackageSelection& selection = sel_entry.second;
+            const SNESRecomp::Package* package =
+                SNESRecomp::selected_package(runtime, package_id.c_str());
+            if (!package)
+                continue;
+            for (const SNESRecomp::Feature& feature : package->features) {
+                if (!SNESRecomp::feature_enabled(runtime, *package, feature))
+                    continue;
+                if (SNESRecomp::feature_exempt(runtime, *package, feature))
+                    continue;
+                text += package_id;
+                text += '@';
+                text += selection.version;
+                text += '/';
+                text += feature.id;
+                /* Options are listed under the package, not the feature, so
+                 * filter — emitting another feature's options here would make
+                 * the line depend on manifest ordering. */
+                std::map<std::string, std::string> opts;
+                for (const SNESRecomp::Option& option : package->options) {
+                    if (option.feature_id != feature.id)
+                        continue;
+                    opts[option.id] =
+                        SNESRecomp::option_value(runtime, *package, feature, option);
+                }
+                for (const auto& o : opts) {
+                    text += ' ';
+                    text += o.first;
+                    text += '=';
+                    text += o.second;
+                }
+                text += '\n';
+            }
+        }
+    }
+    if (text.empty())
+        text = "(none)\n";
+    if (out && cap > 0) {
+        std::snprintf(out, cap, "%s", text.c_str());
+    }
+    return (int)text.size();
+    SNES_MOD_C_END(0)
+}
+
+/*
+ * Can this build honour the host's mod set?
+ *
+ * The host is authoritative and the peer answers yes or no, because mods patch
+ * guest memory: a peer running a different set is running a different game,
+ * and that is better refused at the door than discovered desyncing in the
+ * third round.
+ *
+ * The verdict is simply whether our effective set is byte-identical to theirs
+ * -- that is the same string both sides fingerprint, so agreement here and
+ * agreement at tick 0 mean the same thing. What takes the work is saying WHY
+ * when it differs, because "your mods are wrong" is not something a player can
+ * act on. Each line of the host's set is checked against what we actually have
+ * so the answer names the package, and the version or option, that we cannot
+ * meet.
+ */
+/*
+ * Do we have this package, at this version, and what is it called?
+ *
+ * The lobby shows a guest the host's required mods before anyone seats, and
+ * each row needs a local verdict: installed, wrong version, or absent. Names
+ * come from the manifest so the row reads "Gundam Wing Endless Duel
+ * Localization" rather than "gwed.localization" -- a player who has to go and
+ * install something should be told what to look for.
+ *
+ * Returns 1 installed at that version, 0 present at another, -1 absent.
+ */
+extern "C" int snes_mod_runtime_have_package_c(const char* package_id,
+                                               const char* version,
+                                               char* name_out,
+                                               uint32_t name_cap) {
+    SNES_MOD_C_BEGIN
+    if (name_out && name_cap) name_out[0] = '\0';
+    if (!package_id) return -1;
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    auto it = runtime.packages.find(package_id);
+    if (it == runtime.packages.end() || it->second.empty()) return -1;
+    /* Any version will do for the NAME; the verdict is about the version. */
+    const SNESRecomp::Package& any = it->second.begin()->second;
+    if (name_out && name_cap)
+        std::snprintf(name_out, name_cap, "%s",
+                      any.name.empty() ? package_id : any.name.c_str());
+    if (!version || !version[0]) return 1;
+    return it->second.find(version) != it->second.end() ? 1 : 0;
+    SNES_MOD_C_END(0)
+}
+
+/*
+ * Which features of the installed package `package_id` cannot run yet because
+ * a required owner-supplied file (another game's ROM, say) is unselected,
+ * missing, or not the expected file? Comma-separated feature ids, every
+ * feature of the selected version whether enabled or not: the netplay offer
+ * carries this so a host enabling a feature mid-lobby already knows the
+ * answer. Returns the count; the list is cut short rather than overrun.
+ */
+extern "C" int snes_mod_runtime_missing_files_c(const char* package_id,
+                                                char* out, uint32_t cap) {
+    SNES_MOD_C_BEGIN
+    if (out && cap) out[0] = '\0';
+    if (!package_id) return 0;
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    const SNESRecomp::Package* package =
+        SNESRecomp::selected_package(runtime, package_id);
+    if (!package) return 0;
+    int count = 0;
+    size_t used = 0;
+    for (const SNESRecomp::Feature& feature : package->features) {
+        bool missing = false;
+        for (const SNESRecomp::Resource& resource : package->resources) {
+            if (resource.feature_id != feature.id || !resource.required)
+                continue;
+            if (!SNESRecomp::validate_resource_file(
+                    resource,
+                    SNESRecomp::resource_path(runtime, *package, feature,
+                                              resource),
+                    nullptr)) {
+                missing = true;
+                break;
+            }
+        }
+        if (!missing) continue;
+        ++count;
+        if (!out || !cap) continue;
+        const size_t need = feature.id.size() + (used ? 1 : 0);
+        if (used + need + 1 > cap) continue;
+        if (used) out[used++] = ',';
+        std::memcpy(out + used, feature.id.c_str(), feature.id.size() + 1);
+        used += feature.id.size();
+    }
+    return count;
+    SNES_MOD_C_END(0)
+}
+
+namespace {
+
+/* Copy into a fixed row field, refusing rather than truncating. A truncated
+ * package id or version names something else, and every consumer of these
+ * rows compares them for equality. */
+bool row_field(char* dst, size_t cap, const std::string& value) {
+    if (value.size() + 1 > cap) return false;
+    std::memcpy(dst, value.c_str(), value.size() + 1);
+    return true;
+}
+
+}  // namespace
+
+extern "C" int snes_mod_runtime_package_root_c(const char* package_id,
+                                              const char* version,
+                                              char* out, uint32_t cap) {
+    SNES_MOD_C_BEGIN
+    if (out && cap) out[0] = '\0';
+    if (!package_id || !out || !cap) return 0;
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    if (!runtime.initialized) return 0;
+
+    const SNESRecomp::Package* package = nullptr;
+    if (version && version[0]) {
+        auto by_id = runtime.packages.find(package_id);
+        if (by_id == runtime.packages.end()) return 0;
+        auto by_ver = by_id->second.find(version);
+        if (by_ver == by_id->second.end()) return 0;
+        package = &by_ver->second;
+    } else {
+        package = SNESRecomp::selected_package(runtime, package_id);
+    }
+    if (!package) return 0;
+
+    const std::string root = package->root.string();
+    if (root.size() + 1 > cap) return 0;
+    std::memcpy(out, root.c_str(), root.size() + 1);
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_runtime_export_package_c(const char* package_id,
+                                                const char* version,
+                                                uint8_t** out, uint32_t* out_len,
+                                                char* sha256_hex, uint32_t sha_cap,
+                                                char* err, uint32_t err_cap) {
+    SNES_MOD_C_BEGIN
+    auto fail = [&](const std::string& why) {
+        if (err && err_cap) std::snprintf(err, err_cap, "%s", why.c_str());
+        return 0;
+    };
+    if (out) *out = nullptr;
+    if (out_len) *out_len = 0;
+    if (sha256_hex && sha_cap) sha256_hex[0] = '\0';
+    if (err && err_cap) err[0] = '\0';
+    if (!package_id || !version || !out || !out_len)
+        return fail("bad arguments");
+
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    if (!runtime.initialized) return fail("mod runtime is not initialized");
+    auto by_id = runtime.packages.find(package_id);
+    if (by_id == runtime.packages.end())
+        return fail(std::string("not installed: ") + package_id);
+    auto by_ver = by_id->second.find(version);
+    if (by_ver == by_id->second.end())
+        return fail(std::string(package_id) + " is not installed at version " +
+                    version);
+
+    std::vector<uint8_t> bytes;
+    std::string error;
+    if (!SNESRecomp::zip_store_tree(by_ver->second.root, bytes, &error))
+        return fail(error.empty() ? "could not pack the package" : error);
+
+    uint8_t digest[32];
+    sha256_compute(bytes.data(), bytes.size(), digest);
+    const std::string hex = SNESRecomp::hex32(digest);
+    if (sha256_hex) {
+        if (sha_cap < hex.size() + 1) return fail("digest buffer too small");
+        std::memcpy(sha256_hex, hex.c_str(), hex.size() + 1);
+    }
+
+    uint8_t* blob = (uint8_t*)std::malloc(bytes.size() ? bytes.size() : 1);
+    if (!blob) return fail("out of memory packing the package");
+    std::memcpy(blob, bytes.data(), bytes.size());
+    *out = blob;
+    *out_len = (uint32_t)bytes.size();
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" void snes_mod_runtime_free_blob_c(uint8_t* blob) {
+    SNES_MOD_C_BEGIN
+    std::free(blob);
+    SNES_MOD_C_END()
+}
+
+extern "C" int snes_mod_runtime_install_blob_c(const uint8_t* data, uint32_t len,
+                                               const char* expect_sha256,
+                                               char* installed_id, uint32_t id_cap,
+                                               char* installed_ver, uint32_t ver_cap,
+                                               char* err, uint32_t err_cap) {
+    SNES_MOD_C_BEGIN
+    auto fail = [&](const std::string& why) {
+        if (err && err_cap) std::snprintf(err, err_cap, "%s", why.c_str());
+        return 0;
+    };
+    if (installed_id && id_cap) installed_id[0] = '\0';
+    if (installed_ver && ver_cap) installed_ver[0] = '\0';
+    if (err && err_cap) err[0] = '\0';
+    if (!data || !len) return fail("nothing was received");
+    if (!expect_sha256 || !*expect_sha256)
+        return fail("refusing to install without a digest to check against");
+
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    if (!runtime.initialized) return fail("mod runtime is not initialized");
+
+    /* Checked BEFORE the archive is parsed, let alone written anywhere. This
+     * is code from another machine: everything downstream -- the zip reader,
+     * the manifest parser, the extractor -- is being handed bytes chosen by
+     * someone else, and the digest is what says they are the bytes the host
+     * meant to send. */
+    uint8_t digest[32];
+    sha256_compute(data, len, digest);
+    const std::string got = SNESRecomp::hex32(digest);
+    std::string want(expect_sha256);
+    std::transform(want.begin(), want.end(), want.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    if (got != want)
+        return fail("the package that arrived is not the one the host sent "
+                    "(digest mismatch); nothing was installed");
+
+    const uint64_t nonce = (uint64_t)
+        std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    std::error_code ec;
+    fs::create_directories(runtime.root, ec);
+    /* install_archive() requires the .snesmod extension, and it reads from a
+     * path -- so the verified bytes land in the mod root's own scratch file
+     * rather than a shared temp directory another process could swap. */
+    const fs::path staged =
+        runtime.root / (".incoming-" + std::to_string(nonce) + ".snesmod");
+    {
+        std::ofstream f(staged, std::ios::binary | std::ios::trunc);
+        if (!f) return fail("cannot write the incoming package");
+        f.write((const char*)data, (std::streamsize)len);
+        if (!f) {
+            std::error_code ignored;
+            fs::remove(staged, ignored);
+            return fail("cannot write the incoming package");
+        }
+    }
+
+    std::string id;
+    std::string ver;
+    std::string error;
+    /* A transfer REPLACES an existing copy of the same version.
+     *
+     * install_archive refuses when the destination exists, which is right for
+     * a file a user dropped in -- but wrong for a package the host just sent,
+     * whose bytes have already been checked against the host's digest above.
+     * Without it, a peer holding a stale or incomplete copy at that version
+     * can never repair it: the row reads "installed", so no download is
+     * offered, and the mod stays broken forever. That is precisely how a
+     * package predating its data being moved inside it survives.
+     *
+     * Only reachable after the digest check passed, so a failed or tampered
+     * transfer can never delete a working package. */
+    const bool ok = SNESRecomp::install_archive(runtime, staged, &id, &ver,
+                                                &error, /*replace=*/true);
+    std::error_code ignored;
+    fs::remove(staged, ignored);
+    if (!ok)
+        return fail(error.empty() ? "the package could not be installed" : error);
+
+    /* install_archive publishes the files; it does NOT tell the runtime they
+     * are there. Without this re-scan the package exists on disk and nowhere
+     * else: have_package_c still answers "absent", so the lobby row stays
+     * "not installed", the offer keeps omitting it, and the host's launch gate
+     * stays shut -- a mod that downloaded and installed perfectly looks like
+     * one that never arrived.
+     *
+     * provider_install (the launcher's own install path) does exactly this
+     * afterwards. Two callers of install_archive must not disagree about what
+     * finishing an install means. */
+    if (!SNESRecomp::scan(runtime, &error))
+        return fail(error.empty() ? "installed, but the mod catalog could not "
+                                    "be re-read" : error);
+    /* Selected at the version just installed, matching provider_install: a
+     * package the host requires is one this peer is expected to RUN, not
+     * merely to own. */
+    runtime.selections[id].version = ver;
+    SNESRecomp::refresh_validation();
+
+    if (installed_id && id_cap)
+        std::snprintf(installed_id, id_cap, "%s", id.c_str());
+    if (installed_ver && ver_cap)
+        std::snprintf(installed_ver, ver_cap, "%s", ver.c_str());
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_runtime_plan_rows_c(SnesModPkgRow* out, int max) {
+    SNES_MOD_C_BEGIN
+    if (!out || max <= 0) return 0;
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    if (!runtime.initialized) return 0;
+    int n = 0;
+    for (const auto& sel_entry : runtime.selections) {
+        if (n >= max) break;
+        const std::string& package_id = sel_entry.first;
+        const SNESRecomp::PackageSelection& selection = sel_entry.second;
+        const SNESRecomp::Package* package =
+            SNESRecomp::selected_package(runtime, package_id.c_str());
+        if (!package) continue;
+
+        std::string feats;
+        for (const SNESRecomp::Feature& feature : package->features) {
+            if (!SNESRecomp::feature_enabled(runtime, *package, feature))
+                continue;
+            /* Presentation-only features are not part of the plan, for the
+             * same reason they are not part of the effective set: this row is
+             * what the lobby server matches a joiner's offer against, so a row
+             * here tells a joiner to go and install something. A filter that
+             * changes only what THIS machine draws is not something to send
+             * anyone shopping for -- and refusing a joiner who lacks it would
+             * reintroduce, at the package grain, exactly the barrier the flag
+             * exists to remove at the feature grain. */
+            if (SNESRecomp::feature_exempt(runtime, *package, feature))
+                continue;
+            if (!feats.empty()) feats += ',';
+            feats += feature.id;
+        }
+        if (feats.empty())
+            continue;           /* package present but contributing nothing */
+
+        SnesModPkgRow row;
+        std::memset(&row, 0, sizeof(row));
+        if (!row_field(row.id, sizeof(row.id), package_id) ||
+            !row_field(row.version, sizeof(row.version), selection.version))
+            continue;           /* see the header: drop, never truncate */
+        row_field(row.name, sizeof(row.name),
+                  package->name.empty() ? package_id : package->name);
+        /* The feature list is a human-readable extra, so a long one is trimmed
+         * rather than costing the player the whole row. */
+        std::snprintf(row.features, sizeof(row.features), "%s", feats.c_str());
+        out[n++] = row;
+    }
+    return n;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_runtime_installed_rows_c(SnesModPkgRow* out, int max) {
+    SNES_MOD_C_BEGIN
+    if (!out || max <= 0) return 0;
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    if (!runtime.initialized) return 0;
+    int n = 0;
+    for (const auto& by_id : runtime.packages) {
+        for (const auto& by_version : by_id.second) {
+            if (n >= max) return n;
+            const SNESRecomp::Package& package = by_version.second;
+            if (package.builtin_diagnostic) continue;
+            SnesModPkgRow row;
+            std::memset(&row, 0, sizeof(row));
+            if (!row_field(row.id, sizeof(row.id), by_id.first) ||
+                !row_field(row.version, sizeof(row.version), by_version.first))
+                continue;
+            row_field(row.name, sizeof(row.name),
+                      package.name.empty() ? by_id.first : package.name);
+            out[n++] = row;
+        }
+    }
+    return n;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" int snes_mod_runtime_check_set_c(const char* want, char* reason,
+                                            uint32_t cap) {
+    SNES_MOD_C_BEGIN
+    auto say = [&](const std::string& text) {
+        if (reason && cap) std::snprintf(reason, cap, "%s", text.c_str());
+    };
+    if (!want) {
+        say("no set supplied");
+        return SNES_MODSET_OPTION;
+    }
+    std::string mine;
+    {
+        std::vector<char> buf(4096);
+        int need = snes_mod_runtime_effective_set_c(buf.data(),
+                                                    (uint32_t)buf.size());
+        if (need >= (int)buf.size()) {
+            say("local mod set too large to compare");
+            return SNES_MODSET_TOO_BIG;
+        }
+        mine = buf.data();
+    }
+    if (mine == want) {
+        say("");
+        return SNES_MODSET_OK;
+    }
+
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    std::istringstream in{std::string(want)};
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line == "(none)") continue;
+        /* "<package>@<version>/<feature> <opt>=<val> ..." */
+        const std::size_t at = line.find('@');
+        const std::size_t slash = line.find('/', at == std::string::npos ? 0 : at);
+        if (at == std::string::npos || slash == std::string::npos) continue;
+        const std::string pkg_id = line.substr(0, at);
+        const std::string version = line.substr(at + 1, slash - at - 1);
+        std::string rest = line.substr(slash + 1);
+        const std::size_t sp = rest.find(' ');
+        const std::string feature_id =
+            sp == std::string::npos ? rest : rest.substr(0, sp);
+
+        auto pkg_it = runtime.packages.find(pkg_id);
+        if (pkg_it == runtime.packages.end() || pkg_it->second.empty()) {
+            say("missing mod: " + pkg_id);
+            return SNES_MODSET_MISSING;
+        }
+        if (pkg_it->second.find(version) == pkg_it->second.end()) {
+            say(pkg_id + " needs version " + version);
+            return SNES_MODSET_VERSION;
+        }
+        const SNESRecomp::Package& package = pkg_it->second.at(version);
+        if (!SNESRecomp::find_feature(package, feature_id)) {
+            say(pkg_id + " has no feature " + feature_id);
+            return SNES_MODSET_OPTION;
+        }
+        /* Every option the host names must exist here and accept their
+         * value; a value this build rejects is as fatal as a missing package. */
+        std::istringstream toks{sp == std::string::npos ? std::string()
+                                                        : rest.substr(sp + 1)};
+        std::string tok;
+        while (toks >> tok) {
+            const std::size_t eq = tok.find('=');
+            if (eq == std::string::npos) continue;
+            const std::string opt_id = tok.substr(0, eq);
+            const std::string value = tok.substr(eq + 1);
+            const SNESRecomp::Option* option =
+                SNESRecomp::find_option(package, feature_id, opt_id);
+            if (!option) {
+                say(pkg_id + " has no option " + opt_id);
+                return SNES_MODSET_OPTION;
+            }
+            std::string err;
+            if (!SNESRecomp::validate_option_value(*option, value, &err)) {
+                say(opt_id + "=" + value + " not available here");
+                return SNES_MODSET_OPTION;
+            }
+        }
+    }
+    /* Everything the host asked for exists here and is legal -- so the
+     * difference is what we have SELECTED, which the player can fix. */
+    say("your selection differs; match the host's");
+    return SNES_MODSET_OPTION;
+    SNES_MOD_C_END(0)
+}
+
+/*
+ * Adopt the host's mod set as our own selection.
+ *
+ * A peer that cannot join because its mods differ is being told to go and
+ * reproduce someone else's configuration by hand, from a log line. This writes
+ * it for them: every feature the host runs is enabled with the host's option
+ * values, and every feature they do NOT run is disabled, because a set is the
+ * whole selection and not just its positive half -- a peer with an extra mod
+ * enabled differs just as surely as one missing a mod.
+ *
+ * Persisted, and deliberately so. Mods activate before the netplay session
+ * exists -- the translation has already patched ROM by the time a handshake
+ * could run -- so this cannot take effect in the current launch, and the
+ * honest contract is "your settings now match the host, start again" rather
+ * than pretending the running match can be repaired.
+ *
+ * Refuses rather than half-applies: if any line names something this build
+ * cannot honour, nothing is written. A partially adopted set is a third
+ * configuration that matches neither side.
+ */
+extern "C" int snes_mod_runtime_adopt_set_c(const char* want, char* reason,
+                                            uint32_t cap) {
+    SNES_MOD_C_BEGIN
+    auto say = [&](const std::string& text) {
+        if (reason && cap) std::snprintf(reason, cap, "%s", text.c_str());
+    };
+    if (!want) {
+        say("no set supplied");
+        return SNES_MODSET_OPTION;
+    }
+    {
+        char why[96];
+        const int check = snes_mod_runtime_check_set_c(want, why, sizeof(why));
+        /* OPTION here means "we could honour it, our selection differs", which
+         * is exactly the case worth adopting. Anything else is a capability we
+         * do not have, and no amount of rewriting selections fixes it. */
+        if (check != SNES_MODSET_OK && check != SNES_MODSET_OPTION) {
+            say(why);
+            return check;
+        }
+        if (check == SNES_MODSET_OK) {
+            say("");
+            return SNES_MODSET_OK;
+        }
+    }
+
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    /* Disable everything first: the host's set is the whole truth.
+     *
+     * Everything the host's set can SPEAK for, that is. A presentation_only
+     * feature is deliberately absent from that set, so sweeping it off here
+     * and waiting for the set to turn it back on would switch it off for good
+     * the moment its owner joined a lobby -- and the first such feature is a
+     * photosensitivity filter, which failing silently and invisibly at the
+     * exact moment a player enters a match is the worst way it could fail.
+     * The host is authoritative over the simulation, not over what this
+     * machine's owner needs to look at. */
+    for (auto& sel : runtime.selections) {
+        const SNESRecomp::Package* package =
+            SNESRecomp::selected_package(runtime, sel.first.c_str());
+        if (!package) continue;
+        for (const SNESRecomp::Feature& feature : package->features) {
+            if (SNESRecomp::feature_exempt(runtime, *package, feature))
+                continue;
+            SNESRecomp::provider_feature_enable(nullptr, sel.first.c_str(),
+                                    feature.id.c_str(), 0);
+        }
+    }
+
+    std::istringstream in{std::string(want)};
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line == "(none)") continue;
+        const std::size_t at = line.find('@');
+        const std::size_t slash = line.find('/', at == std::string::npos ? 0 : at);
+        if (at == std::string::npos || slash == std::string::npos) continue;
+        const std::string pkg_id = line.substr(0, at);
+        const std::string version = line.substr(at + 1, slash - at - 1);
+        std::string rest = line.substr(slash + 1);
+        const std::size_t sp = rest.find(' ');
+        const std::string feature_id =
+            sp == std::string::npos ? rest : rest.substr(0, sp);
+
+        /* Pin the version the host names. selected_package() resolves
+         * through this, so an adopted set is version-exact rather than
+         * "whatever we happen to have". */
+        {
+            auto pit = runtime.packages.find(pkg_id);
+            if (pit != runtime.packages.end() &&
+                pit->second.find(version) != pit->second.end())
+                runtime.selections[pkg_id].version = version;
+        }
+        if (!SNESRecomp::provider_feature_enable(nullptr, pkg_id.c_str(),
+                                     feature_id.c_str(), 1)) {
+            say("could not enable " + pkg_id + "/" + feature_id);
+            return SNES_MODSET_OPTION;
+        }
+        std::istringstream toks{sp == std::string::npos ? std::string()
+                                                        : rest.substr(sp + 1)};
+        std::string tok;
+        while (toks >> tok) {
+            const std::size_t eq = tok.find('=');
+            if (eq == std::string::npos) continue;
+            if (!SNESRecomp::provider_feature_set_option(
+                    nullptr, pkg_id.c_str(), feature_id.c_str(),
+                    tok.substr(0, eq).c_str(), tok.substr(eq + 1).c_str())) {
+                say("could not set " + tok);
+                return SNES_MODSET_OPTION;
+            }
+        }
+    }
+    /* Persist, or the claim is a lie.
+     *
+     * Everything above mutates the in-memory runtime, and nothing writes it
+     * back on its own -- state.toml is written at commit time and not again.
+     * Without this the peer was told "your settings have been changed to match
+     * the host", restarted, and found them exactly as before. A message that
+     * tells a player the problem is fixed when it is not is worse than no
+     * message.
+     */
+    if (!SNESRecomp::save_state(runtime, &runtime.error)) {
+        say(runtime.error.empty() ? "could not save the adopted settings"
+                                  : runtime.error);
+        return SNES_MODSET_OPTION;
+    }
+    say("");
+    return SNES_MODSET_OK;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" const RecompLauncherCModProvider*
+snes_mod_runtime_launcher_provider_c(void) {
+    SNES_MOD_C_BEGIN
+#if defined(RECOMP_LAUNCHER)
+    return SNESRecomp::state().initialized
+        ? SNESRecomp::mod_runtime_launcher_provider() : nullptr;
+#else
+    return nullptr;
+#endif
+    SNES_MOD_C_END(nullptr)
+}
+
+extern "C" int snes_mod_runtime_begin_temporary_c(void) {
+    SNES_MOD_C_BEGIN
+    auto& runtime = SNESRecomp::state();
+    if (!runtime.initialized) return 0;
+    if (!runtime.temporary_selection) {
+        runtime.offline_selections = runtime.selections;
+        runtime.temporary_selection = true;
+    }
+    return 1;
+    SNES_MOD_C_END(0)
+}
+
+extern "C" void snes_mod_runtime_end_temporary_c(void) {
+    SNES_MOD_C_BEGIN
+    auto& runtime = SNESRecomp::state();
+    if (!runtime.temporary_selection) return;
+    for (const auto& [id, package] : runtime.selections)
+        for (const auto& [fid, feature] : package.features)
+            runtime.offline_selections[id].features[fid].resources = feature.resources;
+    runtime.selections = std::move(runtime.offline_selections);
+    runtime.temporary_selection = false;
+    runtime.committed = {};
+    runtime.cosmetic_allow.clear();
+    SNESRecomp::refresh_validation();
+    SNES_MOD_C_END()
+}
+
+extern "C" int snes_mod_runtime_resource_path_c(const char* package_id,
+                                                const char* feature_id,
+                                                const char* resource_id,
+                                                char* out, uint32_t cap) {
+    SNES_MOD_C_BEGIN
+    if (out && cap) out[0] = '\0';
+    if (!package_id || !feature_id || !resource_id || !out || cap == 0) return 0;
+    SNESRecomp::Runtime& runtime = SNESRecomp::state();
+    if (!runtime.initialized) return 0;
+    const SNESRecomp::Package* package =
+        SNESRecomp::selected_package(runtime, package_id);
+    if (!package) return 0;
+    const SNESRecomp::Feature* feature =
+        SNESRecomp::find_feature(*package, feature_id);
+    const SNESRecomp::Resource* resource =
+        SNESRecomp::find_resource(*package, feature_id, resource_id);
+    if (!feature || !resource) return 0;
+    const std::string path =
+        SNESRecomp::resource_path(runtime, *package, *feature, *resource);
+    if (path.empty() || path.size() >= cap) return 0;
+    std::snprintf(out, cap, "%s", path.c_str());
+    return 1;
+    SNES_MOD_C_END(0)
+}

@@ -1,0 +1,308 @@
+/* Regression coverage for the host-side Super FX enhancement boundary.
+ * No game ROM, generated data, or platform frontend is required. */
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "snes/superfx.h"
+#include "snes/saveload.h"
+
+typedef struct StateSink {
+  SaveLoadInfo base;
+  uint8_t bytes[1024];
+  size_t size;
+  int load;
+} StateSink;
+
+static void transfer_state(SaveLoadInfo *sli, void *data, size_t size) {
+  StateSink *sink = (StateSink *)sli;
+  if (size > sizeof(sink->bytes)) abort();
+  if (sink->load) memcpy(data, sink->bytes, size);
+  else memcpy(sink->bytes, data, size);
+  sink->size = size;
+}
+
+enum { kRomSize = 65536, kRamSize = 65536 };
+
+static int failures;
+
+static void check(int condition, const char *message) {
+  if (!condition) {
+    fprintf(stderr, "FAIL: %s\n", message);
+    failures++;
+  }
+}
+
+static SuperFx *make_superfx(uint8_t **rom_out, uint8_t **ram_out) {
+  uint8_t *rom = (uint8_t *)calloc(kRomSize, 1);
+  uint8_t *ram = (uint8_t *)calloc(kRamSize, 1);
+  if (!rom || !ram) {
+    free(rom);
+    free(ram);
+    return NULL;
+  }
+
+  /* PLOT x=4,y=3; decrement x; ALT1; RPIX; STOP. This exercises the native
+   * pixel cache in both instances without invoking an enhanced replay. */
+  static const uint8_t program[] = {0x4c, 0xe1, 0x3d, 0x4c, 0x00};
+  memcpy(rom, program, sizeof(program));
+
+  SuperFx *fx = superfx_create(rom, kRomSize, ram, kRamSize);
+  if (!fx) {
+    free(rom);
+    free(ram);
+    return NULL;
+  }
+  fx->colr = 3;
+  fx->r[1].data = 4;
+  fx->r[2].data = 3;
+  *rom_out = rom;
+  *ram_out = ram;
+  return fx;
+}
+
+static void start_at_zero(SuperFx *fx) {
+  superfx_cpu_write_io(fx, 0x301e, 0);
+  superfx_cpu_write_io(fx, 0x301f, 0);
+  superfx_sync(fx, 10000);
+}
+
+static void destroy_fixture(SuperFx *fx, uint8_t *rom, uint8_t *ram) {
+  superfx_destroy(fx);
+  free(rom);
+  free(ram);
+}
+
+static unsigned prepared, completed;
+static bool prepare_replay(void *context, const SuperFx *source, uint8_t *ram) {
+  (void)context;
+  check(ram != source->ram, "replay callback gets private RAM");
+  check(source->ram[0x100] == 3, "native color input remains original");
+  ram[0x100] = 1;
+  prepared++;
+  return true;
+}
+static void complete_replay(void *context, const SuperFx *result) {
+  (void)context;
+  check(result != NULL, "presentation replay terminates");
+  if (result) {
+    check(result->r[0].data == 1, "replay plots and reads its changed color");
+    check(result->presentation == NULL, "replay cannot recursively capture itself");
+  }
+  completed++;
+}
+
+static void test_private_replay(void) {
+  uint8_t *rom[2], *ram[2];
+  SuperFx *fx[2];
+  const uint8_t program[] = {0x43, 0x4e, 0x4c, 0xe1, 0x3d, 0x4c, 0x00};
+  for (unsigned i = 0; i < 2; i++) {
+    fx[i] = make_superfx(&rom[i], &ram[i]);
+    if (!fx[i]) abort();
+    memcpy(rom[i], program, sizeof(program));
+    fx[i]->r[3].data = 0x100;
+    ram[i][0x100] = 3;
+  }
+  check(!superfx_set_presentation_replay(fx[0], 0, 0, prepare_replay,
+                                        complete_replay, NULL) &&
+        fx[0]->presentation == NULL,
+        "faithful mode rejects replay configuration without allocating");
+  SuperFx extra;
+  check(!superfx_replay_snapshot(fx[0], ram[1], &extra),
+        "faithful snapshots reject additional replay passes");
+  superfx_set_enhancement_mode(fx[1], kSuperFxEnhancement_PresentationReplay);
+  check(superfx_set_presentation_replay(fx[1], 0, 0, prepare_replay,
+                                       complete_replay, NULL), "configure replay");
+  check(!superfx_replay_snapshot(fx[1], ram[1], &extra),
+        "additional replay rejects the authoritative RAM buffer");
+  check(!superfx_replay_snapshot(fx[1], ram[0], fx[1]),
+        "additional replay rejects overwriting its source core");
+  start_at_zero(fx[0]);
+  start_at_zero(fx[1]);
+  check(prepared == 1 && completed == 1, "matching task completes exactly once");
+  check(fx[0]->r[0].data == 3, "original task reads original plotted color");
+  check(memcmp(ram[0], ram[1], kRamSize) == 0, "replay preserves every native RAM byte");
+  check(memcmp((uint8_t *)fx[0] + offsetof(SuperFx, r),
+               (uint8_t *)fx[1] + offsetof(SuperFx, r),
+               offsetof(SuperFx, enhancement_mode) - offsetof(SuperFx, r)) == 0,
+        "private replay preserves every architectural register, cache and clock");
+  superfx_reset(fx[1]);
+  superfx_set_enhancement_mode(fx[1], kSuperFxEnhancement_None);
+  start_at_zero(fx[1]);
+  check(prepared == 1 && completed == 1, "disabled replay never calls title callbacks");
+  for (unsigned i = 0; i < 2; i++) destroy_fixture(fx[i], rom[i], ram[i]);
+}
+
+static void test_replay_job_log(void) {
+  uint8_t *rom, *ram;
+  SuperFx *native = make_superfx(&rom, &ram);
+  if (!native) abort();
+  uint8_t *private_ram = malloc(kRamSize);
+  if (!private_ram) abort();
+  native->master_clock = 100;
+  superfx_set_enhancement_mode(native, kSuperFxEnhancement_PresentationReplay);
+  superfx_cpu_write_io(native, 0x301e, 0);
+  superfx_cpu_write_io(native, 0x301f, 0);
+  SuperFxJob job;
+  check(superfx_job_log(&job, 1) == 1 && job.stop_master == 0,
+        "native job is still running before replay");
+  memcpy(private_ram, ram, kRamSize);
+  SuperFx result;
+  check(superfx_replay_snapshot(native, private_ram, &result),
+        "private replay completes while the native job is running");
+  check(superfx_job_log(&job, 1) == 1 && job.stop_master == 0,
+        "private STOP cannot finish the authoritative job timing record");
+  superfx_sync(native, 10000);
+  check(superfx_job_log(&job, 1) == 1 && job.stop_master > job.start_master,
+        "native STOP still completes its own timing record");
+  free(private_ram);
+  destroy_fixture(native, rom, ram);
+}
+
+typedef struct HookProbe { unsigned calls; bool loop; } HookProbe;
+static void private_hook(SuperFx *fx, uint32_t pc24, void *context) {
+  HookProbe *probe = context;
+  ++probe->calls;
+  if (probe->loop) {
+    superfx_hook_redirect(fx, (uint16_t)pc24);
+    return;
+  }
+  superfx_set_reg(fx, pc24 + 1, 100);
+  fx->ram[0x100 + pc24] = 0x5a;
+}
+static void native_hook(SuperFx *fx, uint32_t pc24, void *context) {
+  (void)fx; (void)pc24;
+  ++*(unsigned *)context;
+}
+
+static void test_private_hooks(void) {
+  uint8_t *rom, *ram;
+  SuperFx *native = make_superfx(&rom, &ram);
+  if (!native) abort();
+  const uint8_t program[] = {0xd1, 0xd2, 0x00};
+  memcpy(rom, program, sizeof(program));
+  uint8_t *private_ram = calloc(kRamSize, 1);
+  if (!private_ram) abort();
+  unsigned native_calls = 0;
+  check(superfx_set_pc_hook(native, 0, native_hook, &native_calls),
+        "install native hook for isolation test");
+  superfx_set_enhancement_mode(native, kSuperFxEnhancement_PresentationReplay);
+  superfx_cpu_write_io(native, 0x301e, 0);
+  superfx_cpu_write_io(native, 0x301f, 0);
+  const SuperFx before = *native;
+  SuperFx result;
+  HookProbe probe = {0, false};
+  SuperFxReplayPcHook hooks[] = {{0, private_hook, &probe},
+                                {1, private_hook, &probe}};
+  check(!superfx_replay_snapshot_with_hooks(native, ram, &result, hooks, 2),
+        "private hooks reject authoritative RAM");
+  check(!superfx_replay_snapshot_with_hooks(native, private_ram, native, hooks, 2),
+        "private hooks reject authoritative core result");
+  check(!superfx_replay_snapshot_with_hooks(native, private_ram, &result, NULL, 2),
+        "private hooks reject missing descriptors");
+  check(superfx_replay_snapshot_with_hooks(native, private_ram, &result, hooks, 2),
+        "explicit private hooks complete replay");
+  check(probe.calls == 2 && result.r[1].data == 101 && result.r[2].data == 101,
+        "each private hook edits only its replay registers");
+  check(private_ram[0x100] == 0x5a && private_ram[0x101] == 0x5a &&
+        ram[0x100] == 0 && ram[0x101] == 0,
+        "private hook RAM edits stay in the private buffer");
+  check(native_calls == 0 && memcmp(native, &before, sizeof(before)) == 0,
+        "replay does not invoke native hooks or change any native core field");
+  check(!result.pc_hooks && !result.pc_hook_count && !result.pc_hook_cap,
+        "completed replay retains no hook allocation");
+  check(superfx_replay_snapshot(native, private_ram, &result) && native_calls == 0,
+        "legacy replay still excludes all native hooks");
+  check(!result.pc_hooks && !result.pc_hook_count && !result.pc_hook_cap,
+        "legacy replay detaches the native hook allocation");
+  probe.loop = true;
+  check(!superfx_replay_snapshot_with_hooks(native, private_ram, &result, hooks, 1),
+        "a looping private hook is bounded by the replay guard");
+  check(!result.pc_hooks && !result.pc_hook_count && !result.pc_hook_cap,
+        "failed replay releases private hook storage");
+  check(memcmp(native, &before, sizeof(before)) == 0 && native_calls == 0,
+        "failed replay leaves the source and native hooks intact");
+  superfx_sync(native, 10000);
+  check(native_calls == 1, "native hook still works after private hooks are freed");
+  free(private_ram);
+  destroy_fixture(native, rom, ram);
+}
+
+int main(void) {
+  test_private_hooks();
+  test_replay_job_log();
+  test_private_replay();
+  uint8_t *native_rom = NULL, *native_ram = NULL;
+  uint8_t *optin_rom = NULL, *optin_ram = NULL;
+  SuperFx *native = make_superfx(&native_rom, &native_ram);
+  SuperFx *optin = make_superfx(&optin_rom, &optin_ram);
+  if (!native || !optin) {
+    fputs("FAIL: could not allocate Super FX fixtures\n", stderr);
+    destroy_fixture(native, native_rom, native_ram);
+    destroy_fixture(optin, optin_rom, optin_ram);
+    return 1;
+  }
+
+  check(superfx_get_enhancement_mode(native) == kSuperFxEnhancement_None,
+        "new cores default to faithful Super FX");
+  superfx_set_widescreen(native, 32, 0x00, 0x0000, 0x100, 0x102, 64);
+  check(native->ws_extra == 0 && native->ws_pixels == NULL,
+        "widescreen configuration is inert without explicit enhancement");
+
+  superfx_set_enhancement_mode(
+      optin, kSuperFxEnhancement_WidescreenLinearProjection);
+  superfx_set_widescreen(optin, 32, 0x00, 0x0000, 0x100, 0x102, 64);
+  check(optin->ws_extra == 32 && optin->ws_pixels != NULL &&
+            optin->ws_task_state != NULL,
+        "explicit enhancement allocates presentation-only replay state");
+
+  /* Match the configured task and give it a tiny valid native viewport. The
+   * enhanced clone will execute, but it must not touch authoritative state. */
+  native_ram[0x100] = optin_ram[0x100] = 4;
+  native_ram[0x102] = optin_ram[0x102] = 7;
+  start_at_zero(native);
+  start_at_zero(optin);
+  check(optin->ws_pending_ready,
+        "matching task produces an enhanced presentation replay");
+  check(memcmp(native_ram, optin_ram, kRamSize) == 0,
+        "enhanced replay does not alter native GSU RAM");
+  check(memcmp((const uint8_t *)native + offsetof(SuperFx, r),
+               (const uint8_t *)optin + offsetof(SuperFx, r),
+               offsetof(SuperFx, enhancement_mode) - offsetof(SuperFx, r)) ==
+            0,
+        "enhanced replay does not alter architectural GSU execution");
+
+  optin->ws_frame_ready = true;
+  optin->ws_pending_ready = true;
+  optin->ws_render_active = true;
+  superfx_set_enhancement_mode(optin, kSuperFxEnhancement_None);
+  check(optin->ws_extra == 0 && !optin->ws_frame_ready &&
+            !optin->ws_pending_ready && !optin->ws_render_active,
+        "returning to faithful mode discards all enhanced presentation state");
+  check(!superfx_get_widescreen_frame(optin, NULL, NULL, NULL, NULL),
+        "faithful mode never exposes an enhanced frame");
+
+  StateSink state = {{transfer_state, NULL}, {0}, 0, 0};
+  native->master_clock = 123456;
+  native->clock_credit = -7;
+  native->irq_pending = true;
+  native->cache_valid[3] = true;
+  native->cache[48] = 0xa5;
+  superfx_saveload(native, &state.base);
+  check(state.size == 696, "versioned GSU state has the expected size");
+  state.load = 1;
+  superfx_saveload(optin, &state.base);
+  check(memcmp(&native->r, &optin->r, state.size) == 0,
+        "registers, pipeline, pixel/cache state, IRQ and clocks restore");
+  check(optin->rom == optin_rom && optin->ram == optin_ram,
+        "restore preserves the destination machine's memory pointers");
+
+  destroy_fixture(native, native_rom, native_ram);
+  destroy_fixture(optin, optin_rom, optin_ram);
+  if (failures)
+    return 1;
+  puts("enhancement_opt_in_test: PASS");
+  return 0;
+}

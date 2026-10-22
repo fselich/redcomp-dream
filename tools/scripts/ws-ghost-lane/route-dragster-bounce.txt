@@ -1,0 +1,62 @@
+# Dragster 1P: accelerate, then alternate direction every ~30 frames.
+wait 640
+press b 2
+wait 180
+press b 2
+wait 180
+press b 2
+wait 180
+press b 2
+wait 180
+press b 2
+wait 360
+press right 800
+press left 30
+wait 30
+press right 30
+wait 30
+press left 30
+wait 30
+press right 30
+wait 30
+press left 30
+wait 30
+press right 30
+wait 30
+press left 30
+wait 30
+press right 30
+wait 30
+press left 30
+wait 30
+press right 30
+wait 30
+press left 30
+wait 30
+press right 30
+wait 30
+press left 30
+wait 30
+press right 30
+wait 30
+press left 30
+wait 30
+press right 30
+wait 30
+press left 30
+wait 30
+press right 30
+wait 30
+press left 30
+wait 30
+press right 30
+wait 30
+press left 30
+wait 30
+press right 30
+wait 30
+press left 30
+wait 30
+press right 30
+wait 30
+press right 1200

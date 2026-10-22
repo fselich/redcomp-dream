@@ -1,0 +1,123 @@
+# Progressive symbol map for Uniracers.
+#
+# Each [[func]] names an address the analyzer should treat as a function.
+# Set emit = true to promote one into ahead-of-time codegen; leave it false
+# to keep it interpreted. tools/regen.sh syncs labels and tier choices into
+# each recomp/bankNN.cfg; only emit=true adds a func/funcs.h declaration.
+# Do not hand-edit the generated blocks in the bank configs.
+
+[[func]]
+name = "I_RESET"
+addr = "8858"
+bank = 0
+emit = false
+note = "Emulation RESET vector ($FFFC)"
+
+[[func]]
+name = "I_NMI"
+addr = "8588"
+bank = 0
+emit = false
+note = "Native NMI vector ($FFEA)"
+
+# Phase D: conservative AOT promotion. These are the anchors for future
+# widescreen hooks; keep the set small and prove replay equivalence.
+# entry_m/entry_x are the variants observed in the Phase C capture.
+[[func]]
+name = "FrameDisplay"
+addr = "85A5"
+bank = 0x80
+entry_m = 1
+entry_x = 0
+emit = true
+note = "Per-frame NMI/display block: sets $57, INIDISP, TM, HDMAEN"
+
+[[func]]
+name = "CameraUpdate"
+addr = "AE59"
+bank = 0x81
+entry_m = 0
+entry_x = 0
+emit = true
+note = "Containing routine for the camera scroll update; $81AE7D is a branch join, not an entry"
+
+# Highest-hit race-only call targets from the Phase C capture (frames 1525+).
+[[func]]
+name = "Race_8182E6"
+addr = "82E6"
+bank = 0x81
+entry_m = 0
+entry_x = 1
+emit = true
+
+[[func]]
+name = "Race_8185BB"
+addr = "85BB"
+bank = 0x81
+entry_m = 0
+entry_x = 1
+emit = true
+
+[[func]]
+name = "Race_81B664"
+addr = "B664"
+bank = 0x81
+entry_m = 0
+entry_x = 0
+emit = true
+
+[[func]]
+name = "Race_818A4A"
+addr = "8A4A"
+bank = 0x81
+entry_m = 1
+entry_x = 0
+emit = true
+
+[[func]]
+name = "Race_81B668"
+addr = "B668"
+bank = 0x81
+entry_m = 0
+entry_x = 0
+emit = true
+
+[[func]]
+name = "Race_82A6F1"
+addr = "A6F1"
+bank = 0x82
+entry_m = 0
+entry_x = 0
+emit = true
+
+[[func]]
+name = "Race_83ED33"
+addr = "ED33"
+bank = 0x83
+entry_m = 0
+entry_x = 0
+emit = true
+
+[[func]]
+name = "Race_83EF10"
+addr = "EF10"
+bank = 0x83
+entry_m = 0
+entry_x = 0
+emit = true
+
+[[func]]
+name = "Race_81B77B"
+addr = "B77B"
+bank = 0x81
+entry_m = 0
+entry_x = 0
+emit = true
+
+[[func]]
+name = "Race_8184D2"
+addr = "84D2"
+bank = 0x81
+entry_m = 0
+entry_x = 0
+emit = true
