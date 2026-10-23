@@ -77,6 +77,8 @@ SNESRECOMP_WS_MINIMAP=0 ./run.sh
 - `docs/UNIRACERS_BG1_RING_FINDINGS.md` — BG1 ring, margins and the
   leading-edge prototype.
 - `docs/UNIRACERS_NATIVE_MAP_HANDOFF.md` — current handoff/state.
+- `docs/UNIRACERS_WS_PARKED_SPRITES.md` — parked OAM entries and the
+  right-edge sliver at the 512 px cap.
 - `docs/UNIRACERS_MEJORAS.md` — roadmap and ideas.
 - `openspec/` — the change history, including the reports for each phase.
 

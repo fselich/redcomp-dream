@@ -6,10 +6,10 @@ experiments.
 
 ## 1. Repository state
 
-- Repo: `<workshop>` (older docs say
-  `<workspace>/...`; the original `build/` even records
-  `<workspace>/...`)
-- ROM: `<repo>/Uniracers (USA).sfc`
+- Repo: `<repo>` (older docs
+  say `<workspace>/...`; archived research ran from the sibling `unirally`
+  workshop, which is no longer required by the active tooling)
+- ROM: `<repo>/rom/Uniracers (USA).sfc`
   - 2,097,152 bytes, CRC32 `383858c7`
   - SHA-256 `859ec99fdc25dd9b239d9085bf656e4f49c93a32faa5bb248da83efd68ebd478`
 - Framework pin: `snesrecomp=9c6afcbfd4106e4613e522741d667047a48ded3b`
@@ -30,8 +30,11 @@ Active OpenSpec changes:
 | `uniracers-ws-source` | 22/23 | **go**: `SNESRECOMP_WS_OFFWINDOW=source` serves both 16:9 margins from the `$7F` track table; 0 wrong on all tracks, cost within noise; recommended 16:9 default. Next: make it the default; ultrawide |
 | `uniracers-ws-ghost-xhigh` | 25/25 | rider OAM X high bit for the widened right cull; on by default, `SNESRECOMP_WS_OAM_XHIGH=0` kills it. Follow-ups in the same change: zoomed tracks (`$03ED`: OAM X unshifted, cull widened by `E << $03ED`), parked culled rider hidden on ultrawide, and the live-race gate fixed for later tours (`$0B4 != 0`, was `== 1`, tour 1 only) |
 | `uniracers-ws-radar` | 22/22 | local 32×32 radar from the `$7F` table with player/rival dots; `[Video] MiniMap=0` disables; report written |
+| `uniracers-ws-right-edge-ghost` | 18/18 | **done**: parked rider sentinel (`X=$170`, `Y=$70`) and the parked 1P 2P pair (`X=$165/$160`, `Y=$20/$60`) are hidden in the PPU copy; no right-edge sliver at 512 px; 16:9/21:9/native byte-identical; WRAM/SRAM/VRAM/CGRAM unchanged; playtest confirmed |
 
 All OpenSpec changes/specs validate.
+
+Parked-sprite/OAM details: `docs/UNIRACERS_WS_PARKED_SPRITES.md`.
 
 ## 2. What is confirmed
 
@@ -142,7 +145,9 @@ Test-only switches (in this build only):
   widened right cull (presentation-only; default on).
   `SNESRECOMP_WS_OAM_XHIGH_LOG=<path>` writes `frame,slot,lo,want` for fixed
   slots (`lo=-1`: a parked rider hidden on ultrawide). The same switch also
-  disables that hiding.
+  disables that hiding. `SNESRECOMP_WS_PARK_LOG=<path>` writes
+  `frame,slot,lo,y,hi,rel,rel_y,E,action` for every parking-sentinel candidate
+  (all 128 slots; `rel`/`rel_y` are set for rider slots 98/99).
 - `[Video] MiniMap = 0` in `config.ini` — disable the local radar (default on).
   `config.local.ini` overrides; `SNESRECOMP_WS_MINIMAP=0` is a test override.
   `SNESRECOMP_WS_RADAR_LOG=<path>` writes

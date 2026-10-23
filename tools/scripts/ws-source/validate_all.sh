@@ -5,9 +5,11 @@
 # usage: validate_all.sh [mode=source]
 set -u
 MODE=${1:-source}
-P="<workshop>"; S="$P/work/ws-source"
-B="$P/work/ws-native-map-spike/project/UniracersSNESRecomp/build-local"
-S1="$P/work/ws-native-map-spike/scripts"; S2="$P/work/ws-leading-edge/scripts"
+H="$(cd "$(dirname "$0")" && pwd)"
+P="$(cd "$H/../../.." && pwd)"; S="$P/work/ws-source"
+B="${UNIRACERS_BUILD:-$P/game/build-local}"
+S1="$P/tools/scripts/ws-native-map-spike"; S2="$P/tools/scripts/ws-leading-edge"
+mkdir -p "$S/logs" "$S/frames"
 OUT="$S/logs/validation-$MODE.txt"; : > "$OUT"
 cd "$B"
 for spec in "dragster|$S1/route-dragster-move.txt|2300|2500" \
@@ -24,11 +26,11 @@ for spec in "dragster|$S1/route-dragster-move.txt|2300|2500" \
   SNESRECOMP_WS_OFFWINDOW_LOG="$S/logs/ow-$tag-mask.csv" \
   SNESRECOMP_BGPROBE_FRAME=$a,$b SNESRECOMP_BGPROBE_FILE="$S/logs/ow-$tag-$a-$b.csv" \
   SNESRECOMP_SCREENSHOT="$S/frames/$tag-$b.ppm" SNESRECOMP_SCREENSHOT_FRAME=$b \
-  ./UniracersSNESRecomp --rom "$P/Uniracers (USA).sfc" --no-launcher --script "$r" \
+  ./UniracersSNESRecomp --rom "$P/rom/Uniracers (USA).sfc" --no-launcher --script "$r" \
     > "$S/logs/run-$tag.log" 2>&1
   {
     echo "== $t ($MODE, frames $a-$b) $(grep -m1 'anchor ok' "$S/logs/src-$tag.log" 2>/dev/null | cut -d' ' -f1-5,10-) drops=$(grep -c dropped "$S/logs/src-$tag.log" 2>/dev/null) cpu=$(grep -o 'cpu_seconds=[0-9.]*' "$S/logs/run-$tag.log")"
-    (cd "$P/work" && python3 -I ws-offwindow/scripts/world_key_check.py "$S/logs/ow-$tag-$a-$b.csv" \
+    (cd "$P" && python3 -I tools/scripts/ws-offwindow/world_key_check.py "$S/logs/ow-$tag-$a-$b.csv" \
        --mask-log "$S/logs/ow-$tag-mask.csv" --served | tail -2)
   } | tee -a "$OUT"
   rm -f "$S/logs/ow-$tag-$a-$b.csv"   # probe CSVs are large; scores are kept

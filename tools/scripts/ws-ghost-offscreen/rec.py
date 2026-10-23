@@ -1,5 +1,6 @@
 import json, sys
-sys.path.insert(0, "<workshop>/work/ws-native-map-spike/scripts")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools/scripts/ws-native-map-spike"))
 from dbg import Dbg
 port, first, last, out = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 d = Dbg(port, timeout=120)

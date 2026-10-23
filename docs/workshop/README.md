@@ -65,14 +65,14 @@ Run it from its build directory (the host anchors `config.ini` and saves beside
 the executable):
 
 ```sh
-cd work/ws-native-map-spike/project/UniracersSNESRecomp/build-local
+cd game/build-local
 ./UniracersSNESRecomp
 ```
 
 It needs the ROM at runtime:
 
 ```sh
-./UniracersSNESRecomp --rom "<workshop>/Uniracers (USA).sfc"
+./UniracersSNESRecomp --rom "<repo>/rom/Uniracers (USA).sfc"
 ```
 
 Headless, 600 frames:
@@ -80,7 +80,7 @@ Headless, 600 frames:
 ```sh
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
 SNESRECOMP_NO_LAUNCHER=1 SNESRECOMP_RUN_FRAMES=600 \
-./UniracersSNESRecomp --rom "<workshop>/Uniracers (USA).sfc" --no-launcher
+./UniracersSNESRecomp --rom "<repo>/rom/Uniracers (USA).sfc" --no-launcher
 ```
 
 ## Widescreen BG1 margin policy

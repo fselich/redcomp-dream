@@ -1,6 +1,7 @@
 # Pull the last ~6000 frames of rider/camera/OAM state from the user's running game.
 import json, sys
-sys.path.insert(0, "<workshop>/work/ws-native-map-spike/scripts")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tools/scripts/ws-native-map-spike"))
 from dbg import Dbg
 out = sys.argv[1]
 d = Dbg(4377, timeout=120)

@@ -243,8 +243,8 @@ edge.
 ## 6. Reproduce
 
 ```sh
-P="<workshop>"
-cd "$P/work/ws-native-map-spike/project/UniracersSNESRecomp/build-local"
+P="<repo>"
+cd "$P/game/build-local"
 rm -f saves/save.srm saves/save.srm.bak
 
 # native + probe
@@ -252,12 +252,12 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy SNESRECOMP_NO_LAUNCHER=1 \
 SNESRECOMP_RUN_FRAMES=2500 \
 SNESRECOMP_BGPROBE_FRAME=2300,2500 \
 SNESRECOMP_BGPROBE_FILE="$P/work/ws-offwindow/logs/bgprobe-dragster-2300-2500.csv" \
-./UniracersSNESRecomp --rom "$P/Uniracers (USA).sfc" --no-launcher \
-  --script "$P/work/ws-native-map-spike/scripts/route-dragster-move.txt"
+./UniracersSNESRecomp --rom "$P/rom/Uniracers (USA).sfc" --no-launcher \
+  --script "$P/tools/scripts/ws-native-map-spike/route-dragster-move.txt"
 
 # wide (no clamp) + probe: add SNESRECOMP_WS=1 and a different output file
 
-python3 -I "$P/work/ws-offwindow/scripts/world_key_check.py" <probe.csv> [--shift 4]
+python3 -I "$P/tools/scripts/ws-offwindow/world_key_check.py" <probe.csv> [--shift 4]
 ```
 
 Zoom Zoo: `route-zoomzoo-move.txt`, frames `3300,3505`.

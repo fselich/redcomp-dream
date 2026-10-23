@@ -10,11 +10,13 @@ registers.
 usage: trace_loader.py <route.txt> <stop_frame> <out.json> [low_sample high_sample ...]
 """
 import json, os, subprocess, sys, time
-sys.path.insert(0, "<workshop>/work/ws-native-map-spike/scripts")
+from pathlib import Path
+_REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(_REPO / "tools/scripts/ws-native-map-spike"))
 from dbg import Dbg
 
-ROOT = "<workshop>"
-BUILD = ROOT + "/work/ws-map-decode/project/UniracersSNESRecomp/build-decode"
+ROOT = os.environ.get("UNIRACERS_ROOT", str(_REPO))
+BUILD = os.environ.get("UNIRACERS_BUILD", ROOT + "/game/build-debug")
 route, stop, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 addrs = [int(a, 16) for a in sys.argv[4:]] or [0x000F, 0x0010, 0x0011, 0x0400, 0x2000,
                                                0x800F, 0x8010, 0x802F, 0x8400, 0xA000]

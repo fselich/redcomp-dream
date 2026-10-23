@@ -277,6 +277,50 @@ static void WsOamXHighLog(int slot, int lo, int want)
     fflush(f);
 }
 
+/* Diagnostic for the parked-rider sentinel. Scans every OAM slot, not just
+ * the two rider slots, because the game also parks slots 96/97. The rel/rel_y
+ * columns are only meaningful for slots 98/99. */
+static void WsParkLog(int slot, int lo, int y, int hi, int rel, int rel_y,
+                      int e, const char *action)
+{
+    const char *path = getenv("SNESRECOMP_WS_PARK_LOG");
+    if (!path || !*path) return;
+    static FILE *f;
+    if (!f) {
+        f = fopen(path, "w");
+        if (!f) return;
+        fprintf(f, "frame,slot,lo,y,hi,rel,rel_y,E,action\n");
+    }
+    fprintf(f, "%d,%d,%d,%d,%d,%d,%d,%d,%s\n", snes_frame_counter, slot, lo, y,
+            hi, rel, rel_y, e, action);
+    fflush(f);
+}
+
+static void WsParkCandidates(Ppu *ppu, int e, int cam, int cam_y)
+{
+    for (int slot = 0; slot < 128; slot++) {
+        const int lo = ppu->oam[slot * 2] & 0xFF;
+        const int y = ppu->oam[slot * 2] >> 8;
+        const int bit = (slot & 3) * 2;
+        const int hi = (ppu->highOam[slot >> 2] >> bit) & 1;
+        /* A high-bit X below E is the same 9-bit value as a negative X in
+         * [-256, -128): 4:3 wraps it off-screen, but 256 + lo < 256 + E makes
+         * the widened renderer place it in the right margin. Log every such
+         * slot so the parked 2P pair (96/97) is visible in the trace. */
+        if (hi && lo < e) WsParkLog(slot, lo, y, hi, -32768, -32768, e, "right");
+        if (!(hi && lo == 0x70 && y == 0x70)) continue;
+        int rel = -32768, rel_y = -32768;
+        if (slot == 98) {
+            rel = (int16_t)(WsRead16(0x0411) - (uint16)cam);
+            rel_y = (int16_t)(WsRead16(0x0415) - (uint16)cam_y);
+        } else if (slot == 99) {
+            rel = (int16_t)(WsRead16(0x0413) - (uint16)cam);
+            rel_y = (int16_t)(WsRead16(0x0417) - (uint16)cam_y);
+        }
+        WsParkLog(slot, lo, y, hi, rel, rel_y, e, "candidate");
+    }
+}
+
 static void WsFixRiderOamXHigh(Ppu *ppu)
 {
     if (!ppu) return;
@@ -290,6 +334,22 @@ static void WsFixRiderOamXHigh(Ppu *ppu)
     const int cam_y = (int16_t)WsRead16(0x041D);
     static const uint16 wx_addr[2] = { 0x0411, 0x0413 }; /* player, rival */
     static const uint16 wy_addr[2] = { 0x0415, 0x0417 };
+    WsParkCandidates(ppu, e, cam, cam_y);
+    /* Slots 96/97 are the parked 2P pair in a 1P race. Their X high bit is
+     * set (the stored X is negative), so 4:3 wraps them off-screen left; at
+     * E > ~96/101 the raw 9-bit value instead falls inside the widened right
+     * window and shows as a sliver of the unused rider. They have no
+     * legitimate 1P position, so hide them in the PPU copy. */
+    for (int slot = 96; slot <= 97; slot++) {
+        const int lo = ppu->oam[slot * 2] & 0xFF;
+        const int y = ppu->oam[slot * 2] >> 8;
+        const int bit = (slot & 3) * 2;
+        const int hi = (ppu->highOam[slot >> 2] >> bit) & 1;
+        if (!hi) continue;
+        ppu->oam[slot * 2] = (uint16)((0xE0 << 8) | lo);
+        ppu->highOam[slot >> 2] &= (uint8)~(2u << bit);
+        WsParkLog(slot, lo, y, hi, -32768, -32768, e, "hide-pair");
+    }
     for (int i = 0; i < 2; i++) {
         const int slot = 98 + i;
         const int lo = ppu->oam[slot * 2] & 0xFF;
@@ -297,20 +357,19 @@ static void WsFixRiderOamXHigh(Ppu *ppu)
         const int bit = (slot & 3) * 2;
         const int hi = (ppu->highOam[slot >> 2] >> bit) & 1;
         if (hi && lo == 0x70 && y == 0x70) {
-            /* A culled rider is parked at X=$170 (-144), Y=112, large. 4:3
-             * and 16:9 never reach it, but past E ~ 96 its edge shows in the
-             * left margin (or the right one once E >= 112). Keep it only if
-             * the rider really is there; otherwise move it below the field
-             * as a small sprite, which no small size (<= 32 px) can wrap. */
+            /* A culled rider is parked at X=$170, Y=$70, large. That raw X
+             * is 368. At the 512-px cap (E=128) PpuDecodeOamX wraps only at
+             * 256 + E = 384, so 368 lands at +368 and its edge shows at the
+             * right; below E=112 the same value wraps to -144 and can show on
+             * the left. Neither is a real position, so always move the slot
+             * below the field as a small sprite instead of consulting WRAM:
+             * even a rider genuinely at -144,112 is outside the capped view. */
             int rel = (int16_t)(WsRead16(wx_addr[i]) - (uint16)cam);
             int rel_y = (int16_t)(WsRead16(wy_addr[i]) - (uint16)cam_y);
-            /* Tight tolerance: the cull edge is only ~13 px from -144, and
-             * a rider culled there must not be mistaken for a real one. */
-            if (abs(rel + 144) > 4 || abs(rel_y - 112) > 4) {
-                ppu->oam[slot * 2] = (uint16)((0xE0 << 8) | lo);
-                ppu->highOam[slot >> 2] &= (uint8)~(2u << bit);
-                WsOamXHighLog(slot, -1, rel);
-            }
+            ppu->oam[slot * 2] = (uint16)((0xE0 << 8) | lo);
+            ppu->highOam[slot >> 2] &= (uint8)~(2u << bit);
+            WsOamXHighLog(slot, -1, rel);
+            WsParkLog(slot, lo, y, hi, rel, rel_y, e, "hide");
             continue;
         }
         if (hi) continue;

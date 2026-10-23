@@ -1,5 +1,6 @@
 import sys, time, socket
-sys.path.insert(0, "<workshop>/work/ws-native-map-spike/scripts")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tools/scripts/ws-native-map-spike"))
 from dbg import Dbg
 end = time.time() + 900
 d = None

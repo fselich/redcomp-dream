@@ -11,10 +11,12 @@ Known sources (LoROM, all dest $7F:0000): Dragster $18:8000, Zoom Zoo $18:8183,
 Bowl $18:9B4A, Switcher $18:A07E, Monster $18:C6DA (see work/ws-map-decode/notes/findings.md).
 """
 import json, os, subprocess, sys, time
-sys.path.insert(0, "<workshop>/work/ws-native-map-spike/scripts")
+from pathlib import Path
+_REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(_REPO / "tools/scripts/ws-native-map-spike"))
 from dbg import Dbg
-ROOT = "<workshop>"
-BUILD = ROOT + "/work/ws-map-decode/project/UniracersSNESRecomp/build-decode"
+ROOT = os.environ.get("UNIRACERS_ROOT", str(_REPO))
+BUILD = os.environ.get("UNIRACERS_BUILD", ROOT + "/game/build-debug")
 route, f0, stop, out = os.path.abspath(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 for f in ("saves/save.srm", "saves/save.srm.bak"):
     try: os.remove(os.path.join(BUILD, f))

@@ -2,8 +2,10 @@
 """Linear 65816 disassembly with REP/SEP tracking.
 usage: dis.py ROM BANK:ADDR COUNT [m x]"""
 import sys
+from pathlib import Path
+_REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, sys.argv[5] if len(sys.argv) > 5 and '/' in sys.argv[5] else
-    "<workshop>/work/ws-native-map-spike/project/UniracersSNESRecomp/snesrecomp/recompiler")
+    str(_REPO / "game/snesrecomp/recompiler"))
 import snes65816 as s
 rom = s.load_rom(sys.argv[1])
 bank, addr = (int(v, 16) for v in sys.argv[2].split(':'))

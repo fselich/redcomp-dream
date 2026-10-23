@@ -4,9 +4,9 @@
 
 The system SHALL draw a rider admitted by the widened right cull at its true
 screen X in the right margin. It SHALL NOT draw the rider 256 px to the left.
-It SHALL NOT draw a parked/culled rider in either margin. The fix SHALL modify
-only the PPU's uploaded OAM copy and high table and SHALL NOT write guest
-memory.
+It SHALL NOT draw a parked/culled rider, or the parked 1P 2P-pair slots
+(96/97), in either margin. The fix SHALL modify only the PPU's uploaded OAM
+copy and high table and SHALL NOT write guest memory.
 
 #### Scenario: Rival enters the right margin
 
@@ -28,6 +28,15 @@ memory.
 - **AND** no part of the parked sprite is drawn in the left or right margin at
   any `E` up to the 512 px cap, including `E = 128`
 - **AND** the decision does not depend on the rider's WRAM position
+
+#### Scenario: Parked 2P pair in a 1P race
+
+- **WHEN** slots 96/97 carry their parked entries with the X high bit set
+  (`X = $165/$160`, `Y = $20/$60`)
+- **THEN** both slots are moved below the field in the PPU copy
+- **AND** no part of them is drawn in the left or right margin at any `E`,
+  including image X 480/485 at `E = 128`
+- **AND** a positive-X entry (high bit clear) in those slots is not hidden
 
 #### Scenario: Real rider shares the sentinel low byte
 

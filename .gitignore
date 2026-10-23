@@ -24,5 +24,11 @@
 # Local agent/editor configuration.
 /.claude/
 /.opencode/
+/game/.claude/
+/game/.opencode/
+
+# Python bytecode from the research scripts.
+__pycache__/
+*.pyc
 
 .DS_Store
