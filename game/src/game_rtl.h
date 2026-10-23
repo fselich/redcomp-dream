@@ -9,7 +9,7 @@ void GameDrawPpuFrame(void);
 void GameSessionReset(void);
 void GameAfterConfig(void);
 struct SnesDesktopHostFrameStats;
-void GameGhostAfterRunFrame(const struct SnesDesktopHostFrameStats *stats);
+void GameAfterRunFrame(const struct SnesDesktopHostFrameStats *stats);
 
 extern const RtlGameInfo kGameInfo;
 

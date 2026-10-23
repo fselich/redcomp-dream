@@ -46,6 +46,14 @@ cmake --build build-local --parallel
 The ROM is checked against `rom_identity.txt` before generation. `src/gen/`
 is generated from it and is never committed.
 
+After changing the port, run the output gate (it uses a copy of the executable
+and never touches your saves):
+
+```sh
+game/tools/validate.sh            # compare against game/tools/validate_refs.txt
+game/tools/validate.sh --record   # re-record references (double run)
+```
+
 If `snesrecomp/` ever needs to be refreshed from upstream, reapply
 `game/patches-snesrecomp-local.diff`; the vendored tree currently includes the
 framework changes needed by this port.

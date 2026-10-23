@@ -43,15 +43,21 @@ Toda validación debe pasar por 16:9, 21:9, 2,39:1 y 512 px.
 
 ### A3. Script único de validación con referencias — esfuerzo bajo
 
-- Un `validate.sh` que ejecute A1 y A2 y compare con los hashes y
-  puntuaciones guardados (16:9 Dragster 2500 `4b138431…`, nativo `3417f91a…`).
-- Hoy cada cambio trae su propio script.
+**Hecho (2026-10-23):** `game/tools/validate.sh` ejecuta nativo, 16:9, 21:9,
+512 px, las políticas `wrap`/`ring`/`source`/`ghost`/`clamp`, Monster,
+Zoom Zoo y los logs, y compara contra `game/tools/validate_refs.txt`.
+`--record` hace doble ejecución y marca `NONDET` cuando el frame no es
+estable, cayendo a la puntuación de `world_key_check.py`.
+
+- El hash histórico `4b138431…` es la política `wrap`; el 16:9 por defecto
+  (`source`) es `fa228fef…`. Nativo sigue siendo `3417f91a…`.
 
 ### A4. Pruebas que no toquen la partida del usuario — esfuerzo bajo
 
-- Los scripts actuales borran `build-local/saves/`, que es la partida real.
-- Las pruebas deben ejecutarse siempre desde una copia del ejecutable en otro
-  directorio.
+**Hecho (2026-10-23):** `validate.sh` copia el ejecutable a un directorio
+temporal con `saves/` vacío y un `config.ini` generado; no lee ni escribe
+`game/build-local/saves/` ni el `config.ini` del usuario, y comprueba su
+huella al final.
 
 ### A5. Volcado de diagnóstico con una tecla — esfuerzo medio
 
@@ -127,9 +133,13 @@ opciones en caliente y las guarda en `config.ini`:
 
 ### A8. Calidad del código — esfuerzo bajo
 
-- `InLiveRace()` está duplicada en `main.c` y `game_rtl.c`, y ya hubo que
-  corregirla en los dos sitios. Debe existir una sola.
-- Un `uniracers_ram.h` con nombre y explicación para cada dirección:
+**Hecho (2026-10-23):** `game_rtl.c` baja a ~130 líneas y el puerto se divide
+en `ws_frame`, `ws_hud`, `ws_cull`, `ws_oam_fix`, `ws_ring`, `ws_source`,
+`ws_radar`, `ws_ghost_lane` y `ws_debug`. `WsInLiveRace`/`WsWideEnabled` viven
+solo en `ws_frame.c`; `variables.h` nombra las direcciones y el cull es el
+único escritor de WRAM en producción.
+
+- Direcciones nombradas en `variables.h` (el antiguo `uniracers_ram.h`):
   - `$0411/$0413` X de los monociclos;
   - `$0419/$041D` cámara;
   - `$03ED` escala de la ventana de descarte;
@@ -397,7 +407,7 @@ tocar el juego, no solo la presentación.
 | D11 | **Online 2P / leaderboards / ghosts compartidos** | Online | Alto | No (netplay ya existe) |
 | D12 | **Práctica con checkpoints**: reiniciar desde una curva, sin rival, vueltas infinitas | Juego | Medio/alto | Estado/save states |
 | D13 | **Editor/randomizer de pistas** usando el mapa ya decodificado | Contenido | Alto | Datos/colisiones |
-| D14 | **Modularizar `game_rtl.c`** en `widescreen`, `radar`, `oam_fix`, `source`, con un `UniracersSettings` único | Código | Bajo/medio | No |
+| D14 | **Modularizar `game_rtl.c`** en `widescreen`, `radar`, `oam_fix`, `source`, con un `UniracersSettings` único | Código | Bajo/medio | Hecho salvo `UniracersSettings` (siguiente cambio) |
 | D15 | **Skins/paletas de los monociclos** vía shader o reemplazo de color | Mods | Bajo/medio | No |
 | D16 | **Gestor de save data**: backup/restore, import/export y estados por pista | Calidad de vida | Bajo | No |
 

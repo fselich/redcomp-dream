@@ -41,6 +41,15 @@ add_executable(UniracersSNESRecomp
     src/main.c
     src/host_contract.c
     src/game_rtl.c
+    src/ws_frame.c
+    src/ws_debug.c
+    src/ws_cull.c
+    src/ws_hud.c
+    src/ws_oam_fix.c
+    src/ws_ring.c
+    src/ws_source.c
+    src/ws_radar.c
+    src/ws_ghost_lane.c
     src/gen_stubs.c
 )
 

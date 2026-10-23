@@ -1,0 +1,18 @@
+# Dragster route for validate.sh: six evenly spaced confirms, then wait for
+# the real race state ($0300 == 1) before accelerating. This survives the
+# variable menu/attract timing that makes a fixed-frame capture flaky.
+wait 640
+press b 2
+wait 300
+press b 2
+wait 300
+press b 2
+wait 300
+press b 2
+wait 300
+press b 2
+wait 300
+press b 2
+wait 300
+until16 0300 == 0001 12000
+press right 5000

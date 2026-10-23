@@ -30,6 +30,7 @@
 #include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
 #include "config.h"
 #include "common_rtl.h"
+#include "ws_frame.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -47,27 +48,6 @@
 #define SNES_GAME_VERSION "dev"
 #endif
 
-static int WideEnabled(void)
-{
-    const char *e = getenv("SNESRECOMP_WS");
-    if (e && *e) return strcmp(e, "0") != 0;
-    return g_config.widescreen;
-}
-
-/* Live race = race mode byte set, the pause flag clear and no menu.
- * $000B4 is nonzero during the race and pause: 1 on tour 1, 0x0B on a later
- * tour (it is not a plain flag, so only != 0 is tested). $00EE9 is nonzero
- * in pause and after the finish. $00300 is 0/1 in race and countdown and
- * larger in menus. $2004 toggles with player state and is not a liveness
- * signal. */
-static int InLiveRace(void)
-{
-    /* $0B4 is 1 on tour 1 but 0x0B on later tours: only "not zero" is a
-     * race signal. $0300 <= 1 is what excludes the menus. */
-    return g_ram[0x000B4] != 0 && g_ram[0x00EE9] == 0 &&
-           g_ram[0x00300] <= 1;
-}
-
 /* Race frame width (openspec/changes/uniracers-ws-ultrawide). The target
  * aspect is SNESRECOMP_WS_ASPECT ("W:H", a decimal, or "auto") or, by
  * default, the window aspect; never narrower than 16:9. The width is capped
@@ -78,7 +58,7 @@ enum { kWsRaceMaxWidth = 512 };
 static double WsTargetAspect(int drawable_w, int drawable_h)
 {
     const double wide = 16.0 / 9.0;
-    const char *e = getenv("SNESRECOMP_WS_ASPECT");
+    const char *e = WsEnvStr("SNESRECOMP_WS_ASPECT");
     if (e && *e && strcmp(e, "auto") != 0) {
         double a = 0, b = 0;
         const char *colon = strchr(e, ':');
@@ -101,7 +81,7 @@ static void PrepareFrame(int drawable_w, int drawable_h,
                          int *frame_w, int *frame_h)
 {
     *frame_h = 224;
-    if (!(WideEnabled() && InLiveRace())) {
+    if (!(WsWideEnabled() && WsInLiveRace())) {
         *frame_w = 256;
         return;
     }
@@ -126,7 +106,7 @@ static const SnesDesktopHostGame kGameHost = {
     .widescreen_supported = 1,
     .prepare_frame       = &PrepareFrame,
     .after_config        = &GameAfterConfig,
-    .after_run_frame     = &GameGhostAfterRunFrame,
+    .after_run_frame     = &GameAfterRunFrame,
     /* Battery-backed SRAM shows the launcher's SAVES panel. Leave NULL for a
      * title without one. The path is exe-relative. */
     .sram_path           = "saves/save.srm",
