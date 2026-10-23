@@ -9,6 +9,7 @@
 #include "common_rtl.h"
 #include "variables.h"
 #include "ws_frame.h"
+#include "ws_settings.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -27,7 +28,6 @@ static const struct { uint16_t start, end; } kSramBlocks[] = {
     { 0x05E8, 0x073C }, /* tours */
 };
 
-static int s_unlock_tours;
 static int s_unlock_announced;
 
 static uint16_t SramRead16(int off)
@@ -48,17 +48,9 @@ int SaveImageValid(void)
     return 1;
 }
 
-void SaveAfterConfig(void)
-{
-    /* Host-owned [Emulation] section; see WsConfigBool. */
-    s_unlock_tours = WsConfigBool("[Emulation]", "UnlockAllTours", 0);
-    const char *e = WsEnvStr("SNESRECOMP_UNLOCK_TOURS");
-    if (e && *e) s_unlock_tours = WsParseBool(e, s_unlock_tours);
-}
-
 void SaveUnlockTick(void)
 {
-    if (!s_unlock_tours || snes_netplay_active()) return;
+    if (!WsSettingBool(WS_SET_UNLOCK_TOURS) || snes_netplay_active()) return;
     if (!g_sram || g_sram_size < kSramSize) return;
     /* Cheap test first: nothing to do once every tour is shown. */
     if (g_sram[kSramTourStage] >= kSramTourStageAll) return;

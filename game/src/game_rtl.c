@@ -7,6 +7,8 @@
  * modules below:
  *
  *   ws_frame.[ch]       predicates, margin, per-frame context, env cache
+ *   ws_settings.[ch]    one model for every user-facing option
+ *   ws_menu.[ch]        in-game options menu (F10 / Select+L)
  *   ws_cull.[ch]        rider cull widening (the only guest WRAM writer)
  *   ws_hud.[ch]         BG3 elastic band and clamp bands
  *   ws_oam_fix.[ch]     rider X-high/parked OAM fixes (PPU OAM copy only)
@@ -35,6 +37,7 @@
 #include "ws_oam_fix.h"
 #include "ws_radar.h"
 #include "ws_ring.h"
+#include "ws_settings.h"
 
 extern Ppu *g_ppu;
 extern int snes_netplay_active(void);
@@ -90,8 +93,7 @@ void GameAfterRunFrame(const struct SnesDesktopHostFrameStats *stats)
 
 void GameAfterConfig(void)
 {
-    WsRadarAfterConfig();
-    SaveAfterConfig();
+    WsSettingsLoad();
 }
 
 void GameSessionReset(void)

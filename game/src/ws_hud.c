@@ -2,10 +2,11 @@
 #include "ws_hud.h"
 
 #include "ws_frame.h"
+#include "ws_settings.h"
 
 static int WsHudEnabled(void)
 {
-    return WsEnvFlag("SNESRECOMP_WS_HUD", 1);
+    return WsSettingBool(WS_SET_HUD);
 }
 
 void WsApplyHud(Ppu *ppu, const WsFrameCtx *ctx)

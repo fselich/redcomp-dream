@@ -7,6 +7,8 @@ The port is playable. It includes:
 
 - widescreen/ultrawide presentation up to 512 px, with the track table serving
   both margins (`source` is the default);
+- an in-game options menu (F10 or Select+L) that changes the widescreen and
+  display settings live and saves them to `config.ini`;
 - the rival OAM X-high fix and the parked-sprite/zoomed-track follow-ups;
 - a local 64×32 radar in the lower-right corner, with player and rival markers;
 - save states, rewind, audio and controller support from the framework.
@@ -78,6 +80,41 @@ passed through:
 ./run.sh --script tools/scripts/ws-native-map-spike/route-dragster-move.txt
 SNESRECOMP_WS_MINIMAP=0 ./run.sh
 ```
+
+### Options menu (F10 / Select+L)
+
+Press **F10** or **Select + L** in a race, in the game's own menus or on the
+title screen. The game freezes and a panel lists the port's user options:
+widescreen, aspect, maximum width, track margin, wide HUD, cull window,
+fullscreen, pixel aspect, audio volume, minimap and unlock all tours. Arrow
+keys or the d-pad move between rows; left/right or `<`/`>` change a value
+and apply it live; A/Enter activates *Guardar en config.ini* or *Cerrar*;
+B/Escape/F10 closes. Closing keeps the changes for the session, and an
+unsaved mark shows while they differ from the file.
+
+F10 no longer loads save-state slot 10. Slot 10 stays reachable from the
+F11 save-state browser (or by rebinding `Load` in `keybinds.ini`/`config.ini`).
+The menu is not available during netplay.
+
+The settings live in `config.ini`:
+
+```ini
+[Widescreen]
+Aspect = auto        ; auto, 16:9, 21:9, 32:9 (a decimal such as 2.0 works too)
+MaxWidth = 512       ; clamped to 342..512
+Margin = source      ; source, ring, clamp, wrap
+Hud = 1
+Cull = 1
+```
+
+`[Graphics] Widescreen`, `Fullscreen` and `DisplayAspect`, `[Video] MiniMap`
+and `[Emulation] UnlockAllTours` keep their existing keys. The precedence is
+**environment > `config.local.ini` > `config.ini` > default**; an option set
+by the environment or by `config.local.ini` is shown with `[ENV]`/`[LOCAL]`
+and cannot be changed in the menu. `SNESRECOMP_WS_TRACK_CLAMP` keeps its
+legacy meaning and locks the margin to `clamp`. The debug variables
+(`*_LOG`, `*_TEST_*`, `GHOST_*`, `OAM_XHIGH`) are still environment-only and
+are not in the menu.
 
 ### Unlock every tour
 

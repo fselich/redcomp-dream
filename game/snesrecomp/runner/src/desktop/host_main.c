@@ -414,6 +414,7 @@ static struct RendererFuncs g_renderer_funcs;
 static int g_savestate_menu_hotkey;
 static int g_rewind_hotkey;
 static int g_open_launcher_hotkey;   /* in_game_launcher only */
+static int g_title_menu_hotkey;      /* title options menu (F10) */
 static uint64_t g_state_generation;
 
 /* The last field actually presented, kept so an overlay can freeze the guest
@@ -1851,9 +1852,14 @@ static void OverlaySelftestPadTick(unsigned pump) {
 static void PresentFrozenWithOverlay(void) {
   const uint32_t *panel = NULL;
   int pw = 0, ph = 0;
-  int is_menu = snes_savestate_menu_overlay_image(&panel, &pw, &ph) && panel;
-  if (!is_menu && !(snes_rewind_overlay_image(&panel, &pw, &ph) && panel))
-    panel = NULL;
+  int is_title = g_game->title_menu && g_game->title_menu->overlay_image &&
+                 g_game->title_menu->overlay_image(&panel, &pw, &ph) && panel;
+  int is_menu = 0;
+  if (!is_title) {
+    is_menu = snes_savestate_menu_overlay_image(&panel, &pw, &ph) && panel;
+    if (!is_menu && !(snes_rewind_overlay_image(&panel, &pw, &ph) && panel))
+      panel = NULL;
+  }
 
   /* The draw buffer is the FROZEN FRAME at twice its size, whichever panel
    * is up. It used to be the panel's own size, which is right for the
@@ -1882,7 +1888,7 @@ static void PresentFrozenWithOverlay(void) {
     memset(pixel_buffer, 0, (size_t)draw_h * (size_t)pitch);
 
   if (panel) {
-    if (is_menu) {
+    if (is_menu || is_title) {
       /* EndDraw applies SNES pixel-aspect correction to this buffer. Keep
        * the menu's stock proportions before that presentation step. */
       snes_ovl_blit_panel(pixel_buffer, pitch, draw_w, draw_h, panel, pw, ph);
@@ -1903,8 +1909,9 @@ static void PresentFrozenWithOverlay(void) {
    * it from the module reporting itself open. */
   {
     static int dumped_menu = 0, dumped_rewind = 0;
-    const char *dump = is_menu ? HostGetenv("OVERLAY_DUMP") : HostGetenv("REWIND_DUMP");
-    int *dumped = is_menu ? &dumped_menu : &dumped_rewind;
+    const int full_panel = is_menu || is_title;
+    const char *dump = full_panel ? HostGetenv("OVERLAY_DUMP") : HostGetenv("REWIND_DUMP");
+    int *dumped = full_panel ? &dumped_menu : &dumped_rewind;
     if (dump && !*dumped && panel) {
       FILE *f = fopen(dump, "wb");
       if (f) {
@@ -1919,6 +1926,7 @@ static void PresentFrozenWithOverlay(void) {
         fclose(f);
         *dumped = 1;
         fprintf(stderr, "[overlay_dump] wrote %s (%dx%d, %s)\n", dump, draw_w, draw_h,
+                is_title ? "title options menu" :
                 is_menu ? "save-state browser" : "rewind filmstrip");
       }
     }
@@ -1960,6 +1968,34 @@ static void RunSavestateMenuLoop(bool *running) {
   SetAudioPaused(g_paused);
   OverlayNoteClosed();
   host_report_breadcrumb("save-state browser CLOSED after %u pumps - guest resuming",
+                         frames);
+}
+
+/* Title options menu's modal pump. Same contract as the browser's: the guest
+ * is frozen, key presses go to the title's handler instead of the keymap, pad
+ * navigation reaches the title, and the frozen frame is presented underneath
+ * the panel. The browser and this menu can never be open together. */
+static void RunTitleMenuLoop(bool *running) {
+  const SnesTitleMenu *menu = g_game->title_menu;
+  unsigned frames = 0;
+  host_report_breadcrumb("title options menu OPEN - guest frozen until it "
+                         "closes (F10, Escape, or pad B)");
+  g_overlay_modal = true;
+  SetAudioPaused(true);
+  while (menu->is_open() && *running) {
+    PumpOverlayEvents(running, menu->handle_key);
+    if (!*running)
+      menu->close();
+    menu->poll_nav(OverlayNavInputs(), SDL_GetTicks());
+    PresentFrozenWithOverlay();
+    SDL_Delay(8);
+    frames++;
+  }
+  g_overlay_modal = false;
+  ResetAudioTimeline();
+  SetAudioPaused(g_paused);
+  OverlayNoteClosed();
+  host_report_breadcrumb("title options menu CLOSED after %u pumps - guest resuming",
                          frames);
 }
 
@@ -3021,6 +3057,49 @@ static const char *RestartReason(const Config *before, const char *rom,
 }
 #endif /* RECOMP_LAUNCHER */
 
+/* Live fullscreen / pixel-aspect setter for a title menu. It walks the same
+ * window path ApplyLiveSettings uses (and the F hotkey for g_win_flags and the
+ * cursor): switch the SDL window mode, resize a non-custom window so the new
+ * pixel aspect is respected, and persist only when asked. */
+void snesrecomp_desktop_set_display(int fullscreen, int display_aspect,
+                                    int persist) {
+  Config before = g_config;
+  const uint32 fs_mask = SNESRECOMP_SDL_WINDOW_FULLSCREEN_DESKTOP |
+                         SDL_WINDOW_FULLSCREEN;
+  if (fullscreen < 0) fullscreen = 0;
+  if (fullscreen > 2) fullscreen = 2;
+  g_config.fullscreen = (uint8)fullscreen;
+  g_config.display_aspect = (uint8)SnesDisplayAspect_Clamp(display_aspect);
+
+  if (g_config.fullscreen != before.fullscreen) {
+    uint32 want = g_config.fullscreen == 2 ? SDL_WINDOW_FULLSCREEN
+                : g_config.fullscreen      ? SNESRECOMP_SDL_WINDOW_FULLSCREEN_DESKTOP : 0;
+    g_win_flags = (g_win_flags & ~fs_mask) | want;
+    SDL_SetWindowFullscreen(g_window, want);
+    g_cursor = want == 0;
+    snesrecomp_sdl_show_cursor(g_cursor);
+  }
+  bool custom_size = g_config.window_width != 0 && g_config.window_height != 0;
+  if (!custom_size && !(g_win_flags & fs_mask) &&
+      (g_config.window_scale != before.window_scale ||
+       g_config.display_aspect != before.display_aspect ||
+       g_config.fullscreen != before.fullscreen)) {
+    if (g_config.window_scale)
+      g_current_window_scale = IntMin(g_config.window_scale, kMaxWindowScale);
+    ChangeWindowScale(0);
+  }
+  if (persist) WriteConfigFile(g_active_config_file);
+}
+
+void snesrecomp_desktop_set_volume(int volume, int persist) {
+  if (volume < 0) volume = 0;
+  if (volume > 100) volume = 100;
+  g_config.volume = volume;
+  ApplyVolume();
+  snes_osd_note_volume(g_config.volume);
+  if (persist) WriteConfigFile(g_active_config_file);
+}
+
 /* The in-game launcher (SnesDesktopHostGame.in_game_launcher). The guest is
  * FROZEN throughout, exactly like the save-state browser: no RtlRunFrame, no
  * draw_ppu_frame. The game window is hidden rather than covered, so a
@@ -3954,6 +4033,14 @@ error_reading:;
           break;
         }
 #endif
+        /* The title menu owns its open key before the keymap: F10 must not
+         * load save-state slot 10 behind it. */
+        if (g_game->title_menu && g_game->title_menu->open &&
+            SNESRECOMP_SDL_EVENT_KEY(event) == g_game->title_menu->open_key &&
+            !g_netplay_session && !snes_savestate_menu_is_open()) {
+          g_title_menu_hotkey = 1;
+          break;
+        }
         HandleInput(SNESRECOMP_SDL_EVENT_KEY(event),
                     SNESRECOMP_SDL_EVENT_MOD(event), true);
         break;
@@ -4284,6 +4371,23 @@ error_reading:;
       }
     }
     g_rewind_hotkey = 0;
+    if (g_game->title_menu) {
+      const SnesTitleMenu *menu = g_game->title_menu;
+      if (!g_title_menu_hotkey && !snes_savestate_menu_is_open() &&
+          !g_netplay_session && menu->poll_open)
+        (void)menu->poll_open(human);
+      if (g_title_menu_hotkey) {
+        g_title_menu_hotkey = 0;
+        if (!snes_savestate_menu_is_open() && !g_netplay_session &&
+            menu->open)
+          menu->open();
+      }
+      if (menu->is_open && menu->is_open()) {
+        RunTitleMenuLoop(&running);
+        GameReset();
+        continue;   /* guest was frozen: no frame to run or present */
+      }
+    }
     /* Exactly ONE poll_open per frame: it latches the previous word to edge
      * detect on, so a second call in the same frame eats the edge. */
     (void)snes_savestate_menu_poll_open(human);

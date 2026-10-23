@@ -72,9 +72,10 @@ huella al final.
 - Hoy existe `work/ws-ghost-xhigh/gate/grab.py`, que necesita el juego abierto y
   el puerto 4377.
 
-### A6. Opciones en `config.ini` — esfuerzo bajo
+### A6. Opciones en `config.ini` — hecho
 
-Una sección `[Widescreen]` con:
+Implementado en `openspec/changes/uniracers-ingame-options`. Una sección
+`[Widescreen]` con:
 
 - `Aspect = auto | 16:9 | 21:9 | …`;
 - `MaxWidth`;
@@ -82,10 +83,11 @@ Una sección `[Widescreen]` con:
 
 Las variables `SNESRECOMP_WS_*` quedan para depuración.
 
-### A6b. Menú de opciones dentro del juego — esfuerzo bajo/medio (requiere A6)
+### A6b. Menú de opciones dentro del juego — hecho (requiere A6)
 
-Un menú superpuesto que se abre con una tecla, congela el juego, cambia
-opciones en caliente y las guarda en `config.ini`:
+Implementado en `openspec/changes/uniracers-ingame-options`: se abre con F10
+o Select+L, congela el juego, cambia las opciones en caliente y las guarda en
+`config.ini`. Un menú superpuesto con esa forma:
 
 ```
 ┌──────────── Panorámico ────────────┐
@@ -435,8 +437,8 @@ que netplay y rollback estén validados en este título.
 1. **A1 + A2 + A4.** Validar las 45 pistas a varios anchos sin tocar tu
    partida. Habría cazado todo lo de estos días.
 2. **A5.** El volcado con una tecla, para los fallos raros como B1.
-3. **A6, A6b, A7, A8.** Opciones en `config.ini` y su menú dentro del juego,
-   git y limpieza; poco esfuerzo.
+3. **A7, A8.** Git y limpieza; poco esfuerzo. (A6 y A6b ya están hechos en
+   `openspec/changes/uniracers-ingame-options`.)
 4. Experiencia: **C2** (indicador del rival) y **C4** (tiempos) por su
    relación valor/esfuerzo, luego **C3** (fantasma de tu mejor vuelta) y
    **C1** (margen hacia delante).

@@ -7,6 +7,8 @@
 #ifndef WS_FRAME_H
 #define WS_FRAME_H
 
+#include <stddef.h>
+
 #include "snes/ppu.h"
 
 typedef struct {
@@ -34,10 +36,16 @@ char *WsTrim(char *s);
 int WsCiEq(const char *a, const char *b);
 int WsParseBool(const char *v, int def);
 
-/* Boolean `key` from `section` (e.g. "[Video]") of config.ini, then
- * config.local.ini, falling back to `def`. The framework parser ignores
- * unknown keys in its host-owned sections, so a port can read its own keys
- * there without a framework change. */
+/* String `key` from `section` (e.g. "[Video]") of `path`. Returns 1 and copies
+ * the trimmed value when the key is found, 0 otherwise. The framework parser
+ * ignores unknown keys in its host-owned sections, so a port can read its own
+ * keys there without a framework change. */
+int WsConfigReadStr(const char *path, const char *section, const char *key,
+                    char *out, size_t cap);
+
+/* Boolean `key` from `section` of config.ini, then config.local.ini, falling
+ * back to `def`. Kept for the debug helpers; user options live in
+ * ws_settings.[ch]. */
 int WsConfigBool(const char *section, const char *key, int def);
 
 #endif /* WS_FRAME_H */

@@ -9,6 +9,7 @@
 #include "config.h"
 #include "variables.h"
 #include "widescreen.h"
+#include "ws_settings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,9 +59,7 @@ int WsEnvInt(const char *name, int def, int lo, int hi)
 
 int WsWideEnabled(void)
 {
-    const char *e = WsEnvStr("SNESRECOMP_WS");
-    if (e && *e) return strcmp(e, "0") != 0;
-    return g_config.widescreen;
+    return WsSettingBool(WS_SET_WIDESCREEN);
 }
 
 int WsInLiveRace(void)
@@ -124,11 +123,12 @@ int WsParseBool(const char *v, int def)
     return def;
 }
 
-static void WsConfigReadBool(const char *path, const char *section,
-                             const char *key, int *value)
+int WsConfigReadStr(const char *path, const char *section, const char *key,
+                    char *out, size_t cap)
 {
     FILE *f = fopen(path, "r");
-    if (!f) return;
+    if (!f) return 0;
+    int found = 0;
     char line[512];
     int in_section = 0;
     while (fgets(line, sizeof(line), f)) {
@@ -144,16 +144,22 @@ static void WsConfigReadBool(const char *path, const char *section,
         char *eq = strchr(p, '=');
         if (!eq) continue;
         *eq = 0;
-        if (WsCiEq(WsTrim(p), key))
-            *value = WsParseBool(WsTrim(eq + 1), *value);
+        if (WsCiEq(WsTrim(p), key)) {
+            snprintf(out, cap, "%s", WsTrim(eq + 1));
+            found = 1;
+        }
     }
     fclose(f);
+    return found;
 }
 
 int WsConfigBool(const char *section, const char *key, int def)
 {
+    char buf[64];
     int value = def;
-    WsConfigReadBool("config.ini", section, key, &value);
-    WsConfigReadBool("config.local.ini", section, key, &value);
+    if (WsConfigReadStr("config.ini", section, key, buf, sizeof(buf)))
+        value = WsParseBool(buf, value);
+    if (WsConfigReadStr("config.local.ini", section, key, buf, sizeof(buf)))
+        value = WsParseBool(buf, value);
     return value;
 }

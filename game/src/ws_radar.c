@@ -11,6 +11,7 @@
 #include "ws_debug.h"
 #include "ws_frame.h"
 #include "ws_ring.h"
+#include "ws_settings.h"
 #include "ws_source.h"
 
 #include <stdio.h>
@@ -36,17 +37,8 @@ extern int snes_netplay_active(void);
 #define WS_RADAR_PLAYER (WS_RADAR_OPAQUE | 0x7FFFu)
 #define WS_RADAR_RIVAL (WS_RADAR_OPAQUE | 0x001Fu)
 
-static int s_radar_enabled = 1;
 static uint16_t s_radar_px[WS_RADAR_PANEL_W * WS_RADAR_PANEL_H];
 static PpuExtraObject s_radar_obj;
-
-void WsRadarAfterConfig(void)
-{
-    /* Host-owned [Video] section; see WsConfigBool. */
-    s_radar_enabled = WsConfigBool("[Video]", "MiniMap", 1);
-    const char *e = WsEnvStr("SNESRECOMP_WS_MINIMAP");
-    if (e && *e) s_radar_enabled = WsParseBool(e, s_radar_enabled);
-}
 
 static int WsRadarHalf(int v)
 {
@@ -74,7 +66,7 @@ void WsRadarUpdate(Ppu *ppu, const WsFrameCtx *ctx)
 {
     if (!ppu) return;
 
-    int eligible = s_radar_enabled && ctx && ctx->active &&
+    int eligible = WsSettingBool(WS_SET_MINIMAP) && ctx && ctx->active &&
                    !ctx->two_player && ctx->extra > 0 &&
                    WsSourceValid() && !snes_netplay_active();
     if (!eligible) {

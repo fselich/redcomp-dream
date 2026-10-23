@@ -61,6 +61,30 @@ typedef struct SnesDesktopHostFrameStats {
   int audio_output_rate;     /* device rate, 0 when audio is disabled */
 } SnesDesktopHostFrameStats;
 
+/* Optional title-owned modal overlay, wired exactly like the save-state
+ * browser: while it is open the guest is frozen, audio is paused, keys and
+ * pad navigation go to the menu and the frozen frame is presented with the
+ * menu's panel on top. The title menu and the save-state browser exclude each
+ * other, and neither opens during netplay. A title that leaves this NULL sees
+ * no change at all. */
+typedef struct SnesTitleMenu {
+  /* Edge-detect the pad gesture on seat 0's filtered input word. Returns
+   * nonzero on the frame the menu opened. Called every frame. */
+  int  (*poll_open)(uint32_t pad);
+  /* Nonzero while the menu wants the host to stay in its modal loop. */
+  int  (*is_open)(void);
+  /* Open from the keyboard binding (`open_key`). */
+  void (*open)(void);
+  /* SDL keycode while the menu is open. `repeat` is nonzero for auto-repeat. */
+  void (*handle_key)(int key, int repeat);
+  /* Pad navigation while open. ticks_ms is a free-running millisecond clock. */
+  void (*poll_nav)(uint32_t pad, uint32_t ticks_ms);
+  /* The rasterized panel, ARGB8888, or 0 when there is none. */
+  int  (*overlay_image)(const uint32_t **pixels, int *w, int *h);
+  void (*close)(void);
+  int  open_key;                 /* SDL keycode, e.g. F10 */
+} SnesTitleMenu;
+
 typedef struct SnesDesktopHostGame {
   /* ── Identity ─────────────────────────────────────────────────────────── */
   const char *display_name;      /* "Super Metroid" (report header, launcher) */
@@ -213,6 +237,8 @@ typedef struct SnesDesktopHostGame {
   /* One line added to every refusal. NULL: a note that headered (.smc) and
    * headerless (.sfc) copies of the right dump both work. */
   const char *rom_help;
+  /* Optional title options menu. See SnesTitleMenu above. */
+  const SnesTitleMenu *title_menu;
 } SnesDesktopHostGame;
 
 /* The whole program. Returns the process exit code. */
@@ -223,6 +249,14 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
 int snesrecomp_desktop_frame_width(void);
 int snesrecomp_desktop_frame_height(void);
 void snesrecomp_desktop_set_widescreen(int enabled);
+/* Apply fullscreen (0 windowed, 1 borderless, 2 exclusive) and the SNES pixel
+ * aspect live through the launcher's own ApplyLiveSettings path. Persists both
+ * through WriteConfigFile when `persist` is nonzero. */
+void snesrecomp_desktop_set_display(int fullscreen, int display_aspect,
+                                    int persist);
+/* [Sound] Volume, 0..100, applied to the mixer at once. Persists through
+ * WriteConfigFile when `persist` is nonzero. */
+void snesrecomp_desktop_set_volume(int volume, int persist);
 
 /* Ask the host to reset its pacing clock at the next opportunity (a title
  * that just changed its presentation settings). */

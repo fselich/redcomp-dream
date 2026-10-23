@@ -9,12 +9,13 @@
 
 #include "variables.h"
 #include "ws_frame.h"
+#include "ws_settings.h"
 
 static WsCullState s_cull;
 
 int WsCullIsEnabled(void)
 {
-    return WsEnvFlag("SNESRECOMP_WS_CULL", 1);
+    return WsSettingBool(WS_SET_CULL);
 }
 
 void WsCullGet(WsCullState *s)

@@ -50,6 +50,8 @@ add_executable(UniracersSNESRecomp
     src/ws_source.c
     src/ws_radar.c
     src/ws_ghost_lane.c
+    src/ws_settings.c
+    src/ws_menu.c
     src/uniracers_save.c
     src/gen_stubs.c
 )

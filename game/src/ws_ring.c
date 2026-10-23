@@ -5,6 +5,7 @@
 #include "variables.h"
 #include "ws_debug.h"
 #include "ws_frame.h"
+#include "ws_settings.h"
 #include "ws_source.h"
 #include "ws_ghost_lane.h"
 
@@ -44,30 +45,19 @@ static int s_ow_live_prev = -1;
  *   0 wrap   raw 512-px ring in the margins (pre-fix look; `wrap`/`off`/`0`)
  *   1 ring   verified ring cells, mask otherwise
  *   2 source ring-verified, then the $7F track table (DEFAULT)
- *   3 ghost  ring + speculative lane (parked: too slow)
+ *   3 ghost  ring + speculative lane (parked: too slow; environment only)
  *   4 clamp  global BG1 clamp to the native 256 px
- * Unset SNESRECOMP_WS_OFFWINDOW means source, or clamp when the legacy
- * SNESRECOMP_WS_TRACK_CLAMP is set. */
+ * The policy comes from the settings model: SNESRECOMP_WS_OFFWINDOW, else the
+ * legacy SNESRECOMP_WS_TRACK_CLAMP (clamp), else [Widescreen] Margin, else
+ * source. It is read every call so the menu can change it live. */
 int WsOffwindowMode(void)
 {
-    static int mode = -2;
-    if (mode == -2) {
-        const char *e = WsEnvStr("SNESRECOMP_WS_OFFWINDOW");
-        const char *legacy = WsEnvStr("SNESRECOMP_WS_TRACK_CLAMP");
-        if (!e || !*e) mode = (legacy && *legacy) ? WS_OW_CLAMP : WS_OW_SOURCE;
-        else if (!strcmp(e, "0") || !strcmp(e, "off") || !strcmp(e, "wrap"))
-            mode = WS_OW_WRAP;
-        else if (!strcmp(e, "ring")) mode = WS_OW_RING;
-        else if (!strcmp(e, "source")) mode = WS_OW_SOURCE;
-        else if (!strcmp(e, "ghost")) mode = WS_OW_GHOST;
-        else if (!strcmp(e, "clamp")) mode = WS_OW_CLAMP;
-        else {
-            fprintf(stderr, "[ws-ow] unknown SNESRECOMP_WS_OFFWINDOW='%s'; "
-                            "using source\n", e);
-            mode = WS_OW_SOURCE;
-        }
-    }
-    return mode;
+    const char *m = WsSettingValue(WS_SET_MARGIN);
+    if (WsCiEq(m, "ring")) return WS_OW_RING;
+    if (WsCiEq(m, "ghost")) return WS_OW_GHOST;
+    if (WsCiEq(m, "clamp")) return WS_OW_CLAMP;
+    if (WsCiEq(m, "wrap")) return WS_OW_WRAP;
+    return WS_OW_SOURCE;
 }
 
 /* Margin hooks run for the modes that substitute margin cells. */

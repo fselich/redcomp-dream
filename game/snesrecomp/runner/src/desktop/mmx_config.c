@@ -395,7 +395,8 @@ static int GetIniSection(const char *s) {
    * "Invalid .ini section" on every start. A section this core has no
    * business parsing is not a malformed file. */
   if (StringEqualsNoCase(s, "[Video]") ||
-      StringEqualsNoCase(s, "[Emulation]"))
+      StringEqualsNoCase(s, "[Emulation]") ||
+      StringEqualsNoCase(s, "[Widescreen]"))
     return 9;
   if (StringEqualsNoCase(s, "[Rewind]"))
     return 10;

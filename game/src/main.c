@@ -31,6 +31,8 @@
 #include "config.h"
 #include "common_rtl.h"
 #include "ws_frame.h"
+#include "ws_menu.h"
+#include "ws_settings.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -49,17 +51,16 @@
 #endif
 
 /* Race frame width (openspec/changes/uniracers-ws-ultrawide). The target
- * aspect is SNESRECOMP_WS_ASPECT ("W:H", a decimal, or "auto") or, by
- * default, the window aspect; never narrower than 16:9. The width is capped
- * at 512 px: the renderer decodes the 9-bit OAM X as [E-256, 256+E), so left-
- * margin sprites alias into the right margin once the margin E exceeds 128. */
-enum { kWsRaceMaxWidth = 512 };
-
+ * aspect comes from the settings model ("W:H", a decimal, or "auto"); with
+ * "auto" it follows the window aspect, never narrower than 16:9. The width is
+ * capped by MaxWidth (default 512): the renderer decodes the 9-bit OAM X as
+ * [E-256, 256+E), so left-margin sprites alias into the right margin once the
+ * margin E exceeds 128. */
 static double WsTargetAspect(int drawable_w, int drawable_h)
 {
     const double wide = 16.0 / 9.0;
-    const char *e = WsEnvStr("SNESRECOMP_WS_ASPECT");
-    if (e && *e && strcmp(e, "auto") != 0) {
+    const char *e = WsSettingValue(WS_SET_ASPECT);
+    if (e && *e && !WsCiEq(e, "auto")) {
         double a = 0, b = 0;
         const char *colon = strchr(e, ':');
         if (colon) {
@@ -86,7 +87,8 @@ static void PrepareFrame(int drawable_w, int drawable_h,
         return;
     }
     SnesDisplayFrame f = SnesDisplayAspect_ComputeAdaptiveFrame(
-        256, 224, kWsRaceMaxWidth, WsTargetAspect(drawable_w, drawable_h),
+        256, 224, WsSettingInt(WS_SET_MAX_WIDTH),
+        WsTargetAspect(drawable_w, drawable_h),
         SnesDisplayAspect_Clamp(g_config.display_aspect));
     *frame_w = f.width;
 }
@@ -107,6 +109,7 @@ static const SnesDesktopHostGame kGameHost = {
     .prepare_frame       = &PrepareFrame,
     .after_config        = &GameAfterConfig,
     .after_run_frame     = &GameAfterRunFrame,
+    .title_menu          = &kWsTitleMenu,
     /* Battery-backed SRAM shows the launcher's SAVES panel. Leave NULL for a
      * title without one. The path is exe-relative. */
     .sram_path           = "saves/save.srm",
