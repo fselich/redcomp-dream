@@ -40,42 +40,10 @@ static int s_radar_enabled = 1;
 static uint16_t s_radar_px[WS_RADAR_PANEL_W * WS_RADAR_PANEL_H];
 static PpuExtraObject s_radar_obj;
 
-/* Host-owned [Video] section: the framework parser accepts unknown keys there
- * silently, so the game can read MiniMap without a snesrecomp change. */
-static void WsRadarReadConfig(const char *path)
-{
-    FILE *f = fopen(path, "r");
-    if (!f) return;
-    char line[512];
-    int in_video = 0;
-    while (fgets(line, sizeof(line), f)) {
-        char *hash = strpbrk(line, ";#");
-        if (hash) *hash = 0;
-        char *p = WsTrim(line);
-        if (!*p) continue;
-        if (*p == '[') {
-            in_video = WsCiEq(p, "[Video]");
-            continue;
-        }
-        if (!in_video) continue;
-        char *eq = strchr(p, '=');
-        if (!eq) continue;
-        *eq = 0;
-        char *key = WsTrim(p);
-        char *val = WsTrim(eq + 1);
-        if (WsCiEq(key, "MiniMap")) {
-            int b = WsParseBool(val, s_radar_enabled);
-            if (b >= 0) s_radar_enabled = b;
-        }
-    }
-    fclose(f);
-}
-
 void WsRadarAfterConfig(void)
 {
-    s_radar_enabled = 1;
-    WsRadarReadConfig("config.ini");
-    WsRadarReadConfig("config.local.ini");
+    /* Host-owned [Video] section; see WsConfigBool. */
+    s_radar_enabled = WsConfigBool("[Video]", "MiniMap", 1);
     const char *e = WsEnvStr("SNESRECOMP_WS_MINIMAP");
     if (e && *e) s_radar_enabled = WsParseBool(e, s_radar_enabled);
 }

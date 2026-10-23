@@ -29,9 +29,15 @@ const char *WsEnvStr(const char *name);
 int WsEnvFlag(const char *name, int def);
 int WsEnvInt(const char *name, int def, int lo, int hi);
 
-/* Small shared parsers (also used by the [Video] MiniMap reader). */
+/* Small shared parsers. */
 char *WsTrim(char *s);
 int WsCiEq(const char *a, const char *b);
 int WsParseBool(const char *v, int def);
+
+/* Boolean `key` from `section` (e.g. "[Video]") of config.ini, then
+ * config.local.ini, falling back to `def`. The framework parser ignores
+ * unknown keys in its host-owned sections, so a port can read its own keys
+ * there without a framework change. */
+int WsConfigBool(const char *section, const char *key, int def);
 
 #endif /* WS_FRAME_H */

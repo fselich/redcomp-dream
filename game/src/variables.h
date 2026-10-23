@@ -42,6 +42,16 @@ enum {
     kRam7fTrackGridBytes   = 0x8000,  /* fixed id-grid size */
 };
 
+/* Battery SRAM (g_sram index). See docs/UNIRACERS_SAVE_FORMAT.md; the
+ * checksummed block table lives in uniracers_save.c. */
+enum {
+    kSramSize          = 0x2000,
+    kSramTourMedal0    = 0x069C, /* medal under starting tour n: + n * $20 */
+    kSramLastLevel     = 0x10D1, /* 0 Bronze, 1 Silver, 2 Gold */
+    kSramTourStage     = 0x10D3, /* tours shown in PICK TOUR, not checksummed */
+    kSramTourStageAll  = 3,      /* >= 3: all nine tours, Hunter included */
+};
+
 extern uint8_t g_ram[0x20000];
 
 static inline uint16_t ram_read16(uint16_t addr)

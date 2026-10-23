@@ -30,6 +30,8 @@ casi siempre a 16:9.
 
 - Una partida de prueba (SRAM) con todos los tours desbloqueados, guardada en
   `work/` y copiada al directorio de prueba en cada ejecución.
+  **Hecho (2026-10-23):** `srm.py unlock` la genera
+  (`work/unlock-tours/a1-unlocked.srm`); ver `docs/UNIRACERS_SAVE_FORMAT.md`.
 - Un recorrido de menú que llegue a cualquier pista: PICK TRACK con el
   selector de nivel (Bronze/Silver…) y el de tour.
 - Para cada pista, la sonda BG1 (`world_key_check.py`) y el registro de sprites
@@ -384,6 +386,8 @@ mejor resultado, pero el trabajo es sobre todo de arte.
 - Remapeo y perfiles de mando (incluido Steam Deck).
 - Una opción para desbloquear todos los tours sin la partida guardada, para
   jugar o practicar cualquier pista. También es útil para A1.
+  **Hecho (2026-10-23):** `[Emulation] UnlockAllTours = 1` sube a 3 el byte
+  `$10D3` de la partida (permanente); cambio `uniracers-unlock-tours`.
 
 ---
 

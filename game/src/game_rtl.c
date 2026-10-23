@@ -15,9 +15,11 @@
  *   ws_radar.[ch]       64x32 local radar panel
  *   ws_ghost_lane.[ch]  speculative BG1 lane for the `ghost` policy
  *   ws_debug.[ch]       lazy CSV/text log files
+ *   uniracers_save.[ch] SRAM checksums and the opt-in UnlockAllTours
  *
- * Guest-state rule: ws_cull.c is the only production writer of WRAM. Every
- * other module is presentation-only. See docs/UNIRACERS_NATIVE_MAP_HANDOFF.md
+ * Guest-state rule: ws_cull.c is the only production writer of WRAM, and
+ * uniracers_save.c the only writer of SRAM (one byte, opt-in). Every other
+ * module is presentation-only. See docs/UNIRACERS_NATIVE_MAP_HANDOFF.md
  * and openspec/changes/uniracers-code-cleanup.
  */
 
@@ -25,6 +27,7 @@
 
 #include "beam_frame_driver.h"
 #include "snes/ppu.h"
+#include "uniracers_save.h"
 #include "ws_cull.h"
 #include "ws_frame.h"
 #include "ws_ghost_lane.h"
@@ -79,12 +82,16 @@ void GameDrawPpuFrame(void)
 
 void GameAfterRunFrame(const struct SnesDesktopHostFrameStats *stats)
 {
+    /* Before the ghost lane, so its snapshot of the real machine already
+     * carries the unlocked stage. */
+    SaveUnlockTick();
     WsGhostAfterRunFrame(stats);
 }
 
 void GameAfterConfig(void)
 {
     WsRadarAfterConfig();
+    SaveAfterConfig();
 }
 
 void GameSessionReset(void)

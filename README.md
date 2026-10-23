@@ -79,6 +79,26 @@ passed through:
 SNESRECOMP_WS_MINIMAP=0 ./run.sh
 ```
 
+### Unlock every tour
+
+The game reveals its nine tours in stages as you earn medals. To have all of
+them from the start, add to `config.ini`:
+
+```ini
+[Emulation]
+UnlockAllTours = 1
+```
+
+`SNESRECOMP_UNLOCK_TOURS=1 ./run.sh` does the same for one session.
+
+The option raises one byte in your save (`$10D3`, the tour reveal stage, see
+`docs/UNIRACERS_SAVE_FORMAT.md`). Medals, records and names stay as they are.
+The change is **permanent for that save**: the game stores it on exit, and
+turning the option off later does not hide the tours again. It has no effect
+in netplay. To go back, restore a copy of `game/build-local/saves/save.srm`
+made beforehand. `tools/scripts/save/srm.py` can inspect a save (`dump`,
+`verify`) or write an unlocked copy (`unlock IN OUT`) without the option.
+
 ## Documentation
 
 - `docs/UNIRACERS_TRACK_FORMAT.md` — decoded `$7F` track format.
@@ -87,6 +107,8 @@ SNESRECOMP_WS_MINIMAP=0 ./run.sh
 - `docs/UNIRACERS_NATIVE_MAP_HANDOFF.md` — current handoff/state.
 - `docs/UNIRACERS_WS_PARKED_SPRITES.md` — parked OAM entries and the
   right-edge sliver at the 512 px cap.
+- `docs/UNIRACERS_SAVE_FORMAT.md` — battery SRAM: checksummed blocks, tour
+  reveal stage, medals.
 - `docs/UNIRACERS_MEJORAS.md` — roadmap and ideas.
 - `openspec/` — the change history, including the reports for each phase.
 

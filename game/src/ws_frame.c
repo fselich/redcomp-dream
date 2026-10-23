@@ -10,6 +10,7 @@
 #include "variables.h"
 #include "widescreen.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -121,4 +122,38 @@ int WsParseBool(const char *v, int def)
         WsCiEq(v, "no"))
         return 0;
     return def;
+}
+
+static void WsConfigReadBool(const char *path, const char *section,
+                             const char *key, int *value)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[512];
+    int in_section = 0;
+    while (fgets(line, sizeof(line), f)) {
+        char *hash = strpbrk(line, ";#");
+        if (hash) *hash = 0;
+        char *p = WsTrim(line);
+        if (!*p) continue;
+        if (*p == '[') {
+            in_section = WsCiEq(p, section);
+            continue;
+        }
+        if (!in_section) continue;
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = 0;
+        if (WsCiEq(WsTrim(p), key))
+            *value = WsParseBool(WsTrim(eq + 1), *value);
+    }
+    fclose(f);
+}
+
+int WsConfigBool(const char *section, const char *key, int def)
+{
+    int value = def;
+    WsConfigReadBool("config.ini", section, key, &value);
+    WsConfigReadBool("config.local.ini", section, key, &value);
+    return value;
 }
