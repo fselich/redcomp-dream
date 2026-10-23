@@ -157,8 +157,9 @@ kill switches, margin evidence, 4:3 result and remaining P9–P13 gaps.
 
 The system SHALL draw a rider admitted by the widened right cull at its true
 screen X in the right margin. It SHALL NOT draw the rider 256 px to the left.
-The fix SHALL modify only the PPU's uploaded OAM high table and SHALL NOT write
-guest memory.
+It SHALL NOT draw a parked/culled rider, or the parked 1P 2P-pair slots
+(96/97), in either margin. The fix SHALL modify only the PPU's uploaded OAM
+copy and high table and SHALL NOT write guest memory.
 
 #### Scenario: Rival enters the right margin
 
@@ -174,13 +175,33 @@ guest memory.
 
 #### Scenario: Rider culled
 
-- **WHEN** the game parks a culled rider (high bit already set)
-- **THEN** the fix leaves that slot unchanged
+- **WHEN** the game parks a culled rider with the sentinel entry
+  (`X = $170`, `Y = $70`, high bit set)
+- **THEN** that slot is moved below the field in the PPU copy
+- **AND** no part of the parked sprite is drawn in the left or right margin at
+  any `E` up to the 512 px cap, including `E = 128`
+- **AND** the decision does not depend on the rider's WRAM position
+
+#### Scenario: Parked 2P pair in a 1P race
+
+- **WHEN** slots 96/97 carry their parked entries with the X high bit set
+  (`X = $165/$160`, `Y = $20/$60`)
+- **THEN** both slots are moved below the field in the PPU copy
+- **AND** no part of them is drawn in the left or right margin at any `E`,
+  including image X 480/485 at `E = 128`
+- **AND** a positive-X entry (high bit clear) in those slots is not hidden
+
+#### Scenario: Real rider shares the sentinel low byte
+
+- **WHEN** a rider's uploaded entry has the high bit clear, or its low byte or
+  Y differs from the parking sentinel
+- **THEN** it is treated as a real rider and is not hidden by the parked
+  sentinel rule
 
 #### Scenario: Ambiguity not resolvable
 
 - **WHEN** the WRAM-derived X does not clearly prefer `lo + 256` over `lo`
-- **THEN** the slot is left unchanged
+- **THEN** the slot is left unchanged by the high-bit fix
 
 ### Requirement: High-bit fix has its own gate
 
