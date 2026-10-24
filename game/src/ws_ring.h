@@ -47,7 +47,11 @@ uint16_t WsRingMapAddr(int vp, int cx, int cy);
 const WsRingSeen *WsRingSeenCell(int vp, int cy, int cx);
 unsigned WsRingSceneGeneration(int vp);
 
-/* Viewport-0 wrappers, kept for the radar. */
+/* Scroll accessors for a viewport; the plain names are viewport-0 wrappers
+ * for the radar. */
+int WsRingScrollValidVp(int vp);
+int32_t WsRingScrollHVp(int vp);
+int32_t WsRingScrollVVp(int vp);
 int WsRingScrollValid(void);
 int32_t WsRingScrollH(void);
 int32_t WsRingScrollV(void);

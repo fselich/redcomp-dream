@@ -9,6 +9,7 @@
 #include "config.h"
 #include "variables.h"
 #include "widescreen.h"
+#include "ws_cull.h"
 #include "ws_settings.h"
 
 #include <stdio.h>
@@ -59,6 +60,10 @@ int WsInLiveRace(void)
      * In 2P/VS kRamRaceMode is 0 but kRamTwoPlayer is 1 for the split-screen
      * race. */
     if (g_ram[kRamPauseFinish] != 0 || g_ram[kRamScreenMode] > 1) return 0;
+    /* Menus and the track-selection transition can leave the race-mode byte
+     * set with $0300=0. The rider setup writes a plausible race cull window;
+     * a menu/transition window is not. */
+    if (!WsCullLooksLive()) return 0;
     if (g_ram[kRamTwoPlayer] != 0) return 1;       /* 2P/VS split screen */
     return g_ram[kRamRaceMode] != 0;               /* 1P: 1 or 0x0B */
 }

@@ -74,6 +74,8 @@ CASES=(
   "2p-512|game/tools/route-validate-2p-looper.txt|5000|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=32:9"
   "2p-clamp|game/tools/route-validate-2p-looper.txt|5000|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9 SNESRECOMP_WS_OFFWINDOW=clamp"
   "vs-16x9|game/tools/route-validate-vs-looper.txt|5000|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9"
+  "hopper-menu|game/tools/route-validate-hopper.txt|1960|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9 SNESRECOMP_UNLOCK_TOURS=1"
+  "hopper-16x9|game/tools/route-validate-hopper.txt|3200|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9 SNESRECOMP_UNLOCK_TOURS=1"
 )
 
 want_case() {

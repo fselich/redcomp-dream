@@ -49,6 +49,7 @@
 #define WS_SRC_MAX_CANDIDATES 4096
 #define WS_SRC_MAX_PIECES 2048
 #define WS_SRC_MAX_ANCHORS 8
+#define WS_SRC_SEED_WAIT 10
 
 typedef struct {
     int32_t wx, wy;
@@ -60,6 +61,9 @@ typedef struct {
     int32_t ax[WS_SRC_MAX_ANCHORS], ay[WS_SRC_MAX_ANCHORS];
     unsigned generation;
     int race_frame0;                            /* first live frame of this scene */
+    int seed_fail;                              /* failed searches since samples */
+    int seed_world_valid;                       /* start world X was captured */
+    int32_t seed_world_x;                        /* rider world X at the start */
 } WsSrcVp;
 
 static WsSrcVp s_src_vp[WS_VP_MAX];
@@ -169,6 +173,62 @@ static int WsSrcAgreement(const WsSrcSample *smp, int n, int32_t ax,
     return ok;
 }
 
+/* Seed the anchor from the track header start pair and the first verified
+ * samples. The header stores the start X as a big-endian table cell; the
+ * rider/camera/scroll give the world X. Y is not in the header (the rider
+ * starts a few cells after the line), so it is chosen by table agreement over
+ * the samples. The self-check in WsSrcFrame still validates the seed. */
+static int WsSrcTrySeed(int vp, const WsSrcSample *smp, int n)
+{
+    WsSrcVp *v = &s_src_vp[vp];
+    if (n <= 0 || s_src_cols <= 0 || !v->seed_world_valid) return 0;
+    uint16_t hx = (uint16_t)((g_ram[kRam7fBase + 0x0002] << 8) |
+                             g_ram[kRam7fBase + 0x0003]);
+    uint16_t hy = (uint16_t)((g_ram[kRam7fBase + 0x0004] << 8) |
+                             g_ram[kRam7fBase + 0x0005]);
+    if (hx == 0 && hy == 0) return 0;
+    if (hx >= s_src_cols) return 0;
+
+    int32_t ax = (int32_t)hx - v->seed_world_x;
+
+    struct { int ay, count; } cand[WS_SRC_MAX_SAMPLES * 2];
+    int nc = 0;
+    for (int i = 0; i < n; i++) {
+        int32_t tx = smp[i].wx + ax;
+        for (int ty = 0; ty < s_src_rows; ty++) {
+            uint16_t w;
+            if (!WsSrcCell(tx, ty, &w) || w != smp[i].tile) continue;
+            int ay = ty - smp[i].wy;
+            int j = 0;
+            for (; j < nc; j++)
+                if (cand[j].ay == ay) break;
+            if (j == nc) {
+                if (nc >= (int)(sizeof(cand) / sizeof(cand[0]))) continue;
+                cand[nc].ay = ay;
+                cand[nc].count = 0;
+                nc++;
+            }
+            cand[j].count++;
+        }
+    }
+    int best = -1;
+    for (int i = 0; i < nc; i++)
+        if (best < 0 || cand[i].count > cand[best].count) best = i;
+    WsSrcLog(vp, "%d seed try ax=%d n=%d nc=%d best=%d count=%d\n",
+             snes_frame_counter, ax, n, nc, best,
+             best >= 0 ? cand[best].count : 0);
+    if (best < 0 || cand[best].count * 20 < n * 19) return 0;
+
+    v->valid = 1;
+    v->ax[0] = ax;
+    v->ay[0] = cand[best].ay;
+    v->seed_fail = 0;
+    WsSrcLog(vp, "%d anchor ok seed ax=%d ay=%d anchors=1 grid=%dx%d "
+             "samples=%d header=%d,%d\n", snes_frame_counter, ax, v->ay[0],
+             s_src_cols, s_src_rows, n, hx, hy);
+    return 1;
+}
+
 /* Find the unique anchor matching >= 95 % of this viewport's verified cells.
  * Seeds from the rarest sampled word; candidate positions come from a
  * per-piece index of where that word occurs. */
@@ -183,6 +243,11 @@ static void WsSrcSearch(int vp)
         if (snes_frame_counter % 30 == 0)
             WsSrcLog(vp, "%d anchor wait samples=%d\n", snes_frame_counter, n);
         return;
+    }
+    if (v->seed_fail >= WS_SRC_SEED_WAIT) {
+        static WsSrcSample smp_now[WS_SRC_MAX_SAMPLES];
+        int n_now = WsSrcSamples(vp, smp_now, WS_SRC_MAX_SAMPLES, 0);
+        if (WsSrcTrySeed(vp, smp_now, n_now)) return;
     }
     int max_miss = n / 20;                       /* >= 95 % agreement */
 
@@ -250,6 +315,7 @@ static void WsSrcSearch(int vp)
                 v->ay[i] = sur_ay[i];
             }
             v->valid = survivors;
+            v->seed_fail = 0;
             WsSrcLog(vp, "%d anchor ok ax=%d ay=%d anchors=%d grid=%dx%d samples=%d "
                      "seed=%04x candidates=%d latency=%d search_ms=%.3f\n",
                      snes_frame_counter, sur_ax[0], sur_ay[0], survivors,
@@ -261,8 +327,12 @@ static void WsSrcSearch(int vp)
         WsSrcLog(vp, "%d anchor retry seed=%04x candidates=%d survivors=%d "
                  "search_ms=%.3f\n", snes_frame_counter, word, candidates,
                  survivors, ms);
-        if (survivors > 0) return;      /* too ambiguous: wait for the camera */
+        if (survivors > 0) {            /* too ambiguous: wait for the camera */
+            v->seed_fail++;
+            return;
+        }
     }
+    v->seed_fail++;
 }
 
 /* After each drawn frame: keep, verify or (re)establish the viewport's anchor. */
@@ -274,7 +344,17 @@ static void WsSrcFrame(int vp)
         if (v->valid)
             WsSrcLog(vp, "%d anchor dropped: scene reset\n", snes_frame_counter);
         v->valid = 0;
+        v->seed_fail = 0;
         v->race_frame0 = snes_frame_counter;
+        v->seed_world_valid = 0;
+        if (WsRingScrollValidVp(vp)) {
+            uint16_t rx = vp == 0 ? kRamRider1X : kRamRider2X;
+            uint16_t cx = vp == 0 ? kRamCamX : kRamCam2X;
+            int rider_screen_x = (int16_t)(ram_read16(rx) - ram_read16(cx));
+            v->seed_world_x = WsRingFloor16((int64_t)WsRingScrollHVp(vp) +
+                                            rider_screen_x);
+            v->seed_world_valid = 1;
+        }
     }
     if (!v->valid) {
         WsSrcSearch(vp);

@@ -37,12 +37,16 @@ All cases drive the game headless (`SDL_VIDEODRIVER=dummy`, `SNESRECOMP_NO_LAUNC
 | `2p-512` | same | 5000 | widescreen, 32:9 (capped at 512 px) |
 | `2p-clamp` | same | 5000 | 16:9, `SNESRECOMP_WS_OFFWINDOW=clamp` |
 | `vs-16x9` | `game/tools/route-validate-vs-looper.txt` | 5000 | widescreen, 16:9 |
+| `hopper-menu` | `game/tools/route-validate-hopper.txt` | 1960 | 16:9, `SNESRECOMP_UNLOCK_TOURS=1`; must be 256 px with no track-name artifact |
+| `hopper-16x9` | `game/tools/route-validate-hopper.txt` | 3200 | 16:9, `SNESRECOMP_UNLOCK_TOURS=1`; track and radar filled |
+
+The two Hopper cases run on the empty validation save with `SNESRECOMP_UNLOCK_TOURS=1`; the unlock is written to the scratch SRAM only, never the player's save. `hopper-menu` catches the PICK TRACK transition (the race-mode byte is set and `$0300=0`, but the cull is not a race window); `hopper-16x9` checks the seeded source anchor fills both margins and the radar before the first race frame. The 1P `logs` source/park hashes were re-recorded for the cull-gate live-start timing; its frame hash and wrong-cell score are unchanged.
 
 The `2p-native` reference was re-recorded when the per-line OAM size fix landed: the bottom half now shows its rider in 4:3 as well. The 1P references were not re-recorded and are unchanged.
 
 Each case records the SHA-256 of the screenshot. The `logs` case also records the hash of each log (with the wall-clock `search_ms` field normalised) and a **wrong-cell score**: `tools/scripts/ws-offwindow/world_key_check.py` checks the BG probe capture against the offwindow log, and the score hashes the counts of conflicting cells and of wrong cells in each margin, which must stay zero.
 
-For 2P, score a BG probe capture with `world_key_check.py --bottom-line 114 --served`. The option splits the rows at the first bottom-half line (114), unwraps each half's scroll independently and skips the two divider lines. It prints `viewport 0`/`viewport 1` conflicting-cell counts and `margin vp0`/`vp1` wrong-cell counts. The measured 16:9 runs on Dragster, Zoom Zoo, Bowl, Switcher, Monster and Looper report zero wrong served cells in both halves; see [`TWO_PLAYER.md`](TWO_PLAYER.md).
+For Hopper, score a 16:9 BG probe with the normal single-viewport `world_key_check.py --served`; frames 2790–2810 report zero wrong and zero conflicting cells and both margins served. For 2P, score a BG probe capture with `world_key_check.py --bottom-line 114 --served`. The option splits the rows at the first bottom-half line (114), unwraps each half's scroll independently and skips the two divider lines. It prints `viewport 0`/`viewport 1` conflicting-cell counts and `margin vp0`/`vp1` wrong-cell counts. The measured 16:9 runs on Dragster, Zoom Zoo, Bowl, Switcher, Monster and Looper report zero wrong served cells in both halves; see [`TWO_PLAYER.md`](TWO_PLAYER.md).
 
 ### References and determinism
 

@@ -6,7 +6,7 @@
 - In a live race the picture is widened from 16:9 up to 512 px, in 1P and in 2P/VS split screen. The track margins are filled from the game's own unpacked track table (`source`), with a native-width fallback (`clamp`); the HUD is spread to the corners; riders stay visible and correct in the margins. Each half of a split-screen race is widened individually, with its own camera, BG1 map and anchor. A small radar sits in the bottom-right corner in 1P only.
 - An in-game menu (F10 or Select+L) changes every option live and saves it to `config.ini`.
 - An opt-in option unlocks all nine tours in the save.
-- Automated checks cover the tour-1 1P cases and the 2P/VS width matrix; the other 40 1P tracks are not part of them yet (see [`ROADMAP.md`](ROADMAP.md), R1).
+- Automated checks cover the tour-1 1P cases, the 2P/VS width matrix and the Hopper PICK TRACK/race-start cases; the other later tours are not part of the matrix yet (see [`ROADMAP.md`](ROADMAP.md), R1).
 
 ## Documents
 

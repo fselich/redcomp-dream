@@ -6,7 +6,7 @@ Options are listed in [`CONFIG.md`](CONFIG.md); the module layout is in [`ARCHIT
 
 ## When it applies
 
-`WsWideEnabled()` (option `[Graphics] Widescreen`) and `WsInLiveRace()` must both hold. A live race is `$00B4 != 0` (race mode; 1 on tour 1, `$0B` on later tours), `$0EE9 == 0` (not paused or finished) and `$0300 <= 1` (not a menu screen). The predicates are in `game/src/ws_frame.c`.
+`WsWideEnabled()` (option `[Graphics] Widescreen`) and `WsInLiveRace()` must both hold. A live race is `$00B4 != 0` (race mode; 1 on tour 1, `$0B` on later tours), `$0EE9 == 0` (not paused or finished), `$0300 <= 1` (not a menu screen) and a plausible rider cull window (`(int16_t)$0421 <= 0 && (int16_t)$0423 >= 128`). The cull check keeps the Hopper PICK TRACK transition native: the game leaves the race-mode byte set and `$0300=0` while the track menu is still displayed, but the cull words are `0xB33C/0xBB3C`, not a race window. The predicates are in `game/src/ws_frame.c`; the same gate covers 2P/VS, see [`TWO_PLAYER.md`](TWO_PLAYER.md).
 
 ## Frame width
 
@@ -70,4 +70,5 @@ bottom offset. The radar stays 1P-only. Details and measurements are in
   (sentinels and the missing X bit) and a per-line high-table pass that makes
   the bottom rider big; the framework's draw does not replay OAMDATA, so the
   per-line state is synthesised from the staged entries and WRAM.
+- The source anchor can be seeded from the `$7F` header start X and the first verified samples. On Hopper the track margins and radar fill at frame 2598, before the race frame 2764 (the old search found the anchor at 3552); the absolute first frames of the race-start overlay still mask because the seen table has no usable track word. The other later tours are not all validated yet (roadmap R1).
 - The cull window is the only guest write and it feeds only the cull compares, so turning widescreen on or off does not change how a race plays out.

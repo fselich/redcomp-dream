@@ -1,0 +1,22 @@
+# Hopper route: 1P -> PICK YOUR UNI -> PICK TOUR (three downs = Hopper) ->
+# PICK TRACK (WARIO PAINT) -> NOW PLAYING -> race. Run with
+# SNESRECOMP_UNLOCK_TOURS=1 on the empty validation save so Hopper is visible.
+wait 640
+press b 2
+wait 300
+press b 2
+wait 300
+press down 2
+wait 100
+press down 2
+wait 100
+press down 2
+wait 100
+press b 2
+wait 400
+press b 2
+wait 400
+press b 2
+wait 400
+until16 0300 == 0001 30000
+press right 2000

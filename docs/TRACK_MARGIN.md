@@ -50,6 +50,12 @@ Cells served without ever being seen on screen match the offline ROM decode (173
 
 `PpuSetWidescreenLayerClamp(ppu, BG1)`: BG1 is drawn only over the native 256 px, centred, and the margins show the backdrop. No hook is installed. It is always correct and shows less; it is the safe choice if `source` ever misbehaves on a track nobody has checked.
 
+## Header start seed (later tours)
+
+The source anchor can also be seeded from the track header in `$7F:0002–0009` (two identical big-endian cell pairs in the measured tracks) and the race-start world X, so a later tour does not wait for a distinctive track section. The X is `header_x - start_world_x`, where `start_world_x` is the rider/camera world X captured at the race scene reset (not the moving camera); Y is not in the header (the header Y is the start line, and the rider starts 3 cells later on Dragster, 6 on Hopper), so it is chosen by table agreement over the current verified samples after 10 failed general searches. The seed is only installed when it passes the existing self-check; otherwise the general search runs unchanged.
+
+On Hopper the seed reaches `ax=72 ay=-14` at frame 2586, the race scene reset drops it, and it re-seeds at frame 2598; the race screenshot is at frame 2764, so both margins and the radar are filled when the race starts. The old general search only found the anchor at frame 3552. The first ~107 frames have no usable track word in the seen table (race-start overlay) and remain masked, never wrong. The 16:9 BG1 probe at frames 2790–2810 reports zero wrong and zero conflicting cells in both margins. Jumper resolves with the general search at frame 2741 (`ax=119 ay=-5`), so the seed is not needed there but is available per track. The remaining later tours still need their own probe (roadmap R1).
+
 ## Two-player split screen
 
 A 2P race has two cameras and two BG1 maps. On Looper the top half uses map

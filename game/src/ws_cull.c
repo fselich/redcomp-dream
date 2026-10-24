@@ -21,6 +21,17 @@ int WsCullIsEnabled(void)
     return WsSettingBool(WS_SET_CULL);
 }
 
+int WsCullPairLooksLive(uint16_t left, uint16_t right)
+{
+    return (int16_t)left <= 0 && (int16_t)right >= 128;
+}
+
+int WsCullLooksLive(void)
+{
+    return WsCullPairLooksLive(ram_read16(kRamCullLeft),
+                               ram_read16(kRamCullRight));
+}
+
 static void WsRestoreCull(void)
 {
     if (!s_cull.on) return;
@@ -47,7 +58,7 @@ void WsApplyCull(void)
      * means the game just installed a new per-section/per-rider base. */
     if (!s_cull.on || cur_l != s_cull.applied_l || cur_r != s_cull.applied_r) {
         /* Wait for a plausible native screen window: setup writes 0 first. */
-        if ((int16_t)cur_l > 0 || cur_r < 128) {
+        if (!WsCullPairLooksLive(cur_l, cur_r)) {
             s_cull.on = 0;
             return;
         }

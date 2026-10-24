@@ -23,15 +23,15 @@ The port is a static recompilation of the Uniracers ROM on top of the [snesrecom
 | `game_rtl.c` | frame boundary (`GameRunOneFrame`), draw orchestration (`GameDrawPpuFrame`), host callbacks, `kGameInfo` | nothing |
 | `host_contract.c`, `gen_stubs.c` | empty trace hooks for production builds; hand-written bodies for untranslatable code (none today) | nothing |
 | `variables.h` | named WRAM and SRAM addresses and the 16-bit read/write helpers | — |
-| `ws_frame.[ch]` | "widescreen enabled" and "live race" predicates, the extra width `E`, the per-frame context, cached environment lookups, small parsers | nothing |
+| `ws_frame.[ch]` | "widescreen enabled" and "live race" predicates (including the plausible-cull check), the extra width `E`, the per-frame context, cached environment lookups, small parsers | nothing |
 | `ws_settings.[ch]` | the settings model: every option's key, environment variable, values, default, precedence, source and the in-place `config.ini` writer | `config.ini` (on save only) |
 | `ws_menu.[ch]` | in-game options menu (F10 / Select+L), a host title-menu overlay | nothing |
-| `ws_cull.[ch]` | rider cull-window widening | **guest WRAM** (`$0421`/`$0423`) |
+| `ws_cull.[ch]` | rider cull-window widening and the shared cull-plausibility helper used by the live gate and the base wait | **guest WRAM** (`$0421`/`$0423`) |
 | `ws_hud.[ch]` | BG3 elastic band and clamp bands | PPU configuration |
 | `ws_oam_fix.[ch]` | 1P X-high/parked pair/sentinel; 2P frame-level sentinel/X and the per-line high/size synthesis for the bottom half | PPU OAM copy |
 | `ws_margin.[ch]` | per-viewport BG1 margin policy (`source`/`clamp`), hook installation, the tile hook, the BG1 clamp; the line hook also calls the 2P per-line OAM fix | PPU configuration |
 | `ws_ring.[ch]` | BG1 ring observation: seen table, scroll unwrap | nothing |
-| `ws_source.[ch]` | `$7F` track-table reader and the source anchor | nothing |
+| `ws_source.[ch]` | `$7F` track-table reader, the source anchor and the header start seed (X from the start world/header, Y from the first samples) | nothing |
 | `ws_radar.[ch]` | 64×32 radar panel | a PPU extra object |
 | `ws_debug.[ch]` | lazily opened debug log files | log files |
 | `uniracers_save.[ch]` | SRAM block checksums and the opt-in tour unlock | **guest SRAM** (`$10D3`, opt-in) |

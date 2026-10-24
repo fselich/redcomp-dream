@@ -170,6 +170,10 @@ unsigned WsRingSceneGeneration(int vp)
     return WsRingVpGet(vp)->scene_generation;
 }
 
-int WsRingScrollValid(void) { return s_vp[0].scroll_valid; }
-int32_t WsRingScrollH(void) { return s_vp[0].unwrapped_h; }
-int32_t WsRingScrollV(void) { return s_vp[0].unwrapped_v; }
+int WsRingScrollValidVp(int vp) { return WsRingVpGet(vp)->scroll_valid; }
+int32_t WsRingScrollHVp(int vp) { return WsRingVpGet(vp)->unwrapped_h; }
+int32_t WsRingScrollVVp(int vp) { return WsRingVpGet(vp)->unwrapped_v; }
+
+int WsRingScrollValid(void) { return WsRingScrollValidVp(0); }
+int32_t WsRingScrollH(void) { return WsRingScrollHVp(0); }
+int32_t WsRingScrollV(void) { return WsRingScrollVVp(0); }

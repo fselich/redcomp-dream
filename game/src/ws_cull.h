@@ -9,7 +9,11 @@
 #ifndef WS_CULL_H
 #define WS_CULL_H
 
+#include <stdint.h>
+
 int WsCullIsEnabled(void);
+int WsCullPairLooksLive(uint16_t left, uint16_t right);
+int WsCullLooksLive(void);
 void WsApplyCull(void);
 
 #endif /* WS_CULL_H */
