@@ -1,7 +1,9 @@
 # recomp-race-recon Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-race-recon. Update Purpose after archive.
+
+Records the race reconnaissance: a deterministic route to a race, race captures, the renderer map and the widescreen feasibility assessment. A finished investigation.
+
 ## Requirements
 ### Requirement: Deterministic route to a race
 

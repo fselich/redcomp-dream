@@ -1,7 +1,9 @@
 # recomp-ws-discriminator Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-discriminator. Update Purpose after archive.
+
+The live-race predicate that gates widescreen: how it was found and that it holds on every tour while excluding menus, pause and the finish.
+
 ## Requirements
 ### Requirement: State capture
 

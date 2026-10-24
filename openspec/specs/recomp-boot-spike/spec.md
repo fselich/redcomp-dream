@@ -1,7 +1,9 @@
 # recomp-boot-spike Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-boot-spike. Update Purpose after archive.
+
+Records the first boot of the scaffolded port: executable build, headless runs, frame evidence and coverage. A finished investigation.
+
 ## Requirements
 ### Requirement: Pinned scaffold
 

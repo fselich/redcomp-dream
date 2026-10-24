@@ -1,7 +1,9 @@
 # recomp-ws-track-margins Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-track-margins. Update Purpose after archive.
+
+Records the track-margin investigation (failure characterisation, shadow fill experiment) that kept the clamp as the safe default at the time. A finished investigation; superseded by recomp-ws-source.
+
 ## Requirements
 ### Requirement: Track margin failure characterized
 

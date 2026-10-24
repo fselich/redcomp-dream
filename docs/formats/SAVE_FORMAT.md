@@ -1,4 +1,4 @@
-# Uniracers save format (battery SRAM)
+# Save format (battery SRAM)
 
 The game keeps all progress in its 8 KiB battery SRAM (`saves/save.srm`) and
 reads and writes it in place: a race-time WRAM dump holds none of it. The
@@ -51,7 +51,7 @@ Not covered by any checksum. PICK TOUR shows:
 - With `$10D3 ≥ 3` on a fresh save, a small medal icon shows under HUNTER.
   This is cosmetic and its source is unknown.
 
-How it was found (`work/unlock-tours/`, copies only):
+How it was found (on copies only; see `openspec/changes/archive/2026-10-23-uniracers-unlock-tours/report.md`):
 - editing the medal flags, the counters and the track table changed nothing;
 - grafting the player's `$1000–$1FFF` onto a fresh save showed Jumper and
   Bounder; narrowing down left `$10D3`;
@@ -69,7 +69,7 @@ How it was found (`work/unlock-tours/`, copies only):
 | `$05E8–$0617` | 48 bytes of `$10` | unknown |
 | `$0740–$1FFF` | further state and scratch (HUD strings, a copy of the records at `$0829`) | mostly unknown; `$0829–$0E68` appears summed at `$0E69` |
 
-## Unlocked test save (A1)
+## Unlocked test save
 
 ```sh
 python3 -I tools/scripts/save/srm.py unlock IN.srm OUT.srm
@@ -77,7 +77,6 @@ python3 -I tools/scripts/save/srm.py unlock IN.srm OUT.srm
 
 `IN` can be any valid save. For a clean one, boot the game once with an
 empty `saves/` in a scratch directory (about 700 frames, then quit) and take
-the `save.srm` it writes on exit. The current local copy is
-`work/unlock-tours/a1-unlocked.srm` (ROM-derived, not committed): a blank
-save with all nine tours shown and no medals. The game option `UnlockAllTours` (README) applies the same edit to
-the active save.
+the `save.srm` it writes on exit. Starting from a blank save the result shows all nine tours and no medals. Saves are ROM-derived and never committed.
+
+The option `[Emulation] UnlockAllTours` (see [`CONFIG.md`](../CONFIG.md)) applies the same edit to the active save from `game/src/uniracers_save.c`: it raises `$10D3` to 3 only when the image has the magic and every block checksum is valid, and it never writes in netplay.

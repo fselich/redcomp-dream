@@ -1,7 +1,9 @@
 # recomp-ws-track-fill Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-track-fill. Update Purpose after archive.
+
+Records the first BG1 track-fill investigation (stream decode, generator probes) that ended with the clamp fallback. A finished investigation; superseded by recomp-ws-source.
+
 ## Requirements
 ### Requirement: BG1 stream decoded
 

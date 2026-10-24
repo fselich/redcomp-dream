@@ -1,7 +1,9 @@
 # recomp-widescreen-spike Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-widescreen-spike. Update Purpose after archive.
+
+Records the first flag-gated 16:9 spike: the live-race discriminator, wider-field evidence and HUD readability. A finished investigation.
+
 ## Requirements
 ### Requirement: P16 baseline preserved
 

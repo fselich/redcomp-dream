@@ -1,7 +1,9 @@
 # recomp-ws-ultrawide Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-ultrawide. Update Purpose after archive.
+
+Aspect-driven race width up to 512 px, with the margin-dependent policies (cull, HUD, OAM) following the margin and the track correct at every width.
+
 ## Requirements
 ### Requirement: Aspect-driven race width
 

@@ -1,7 +1,9 @@
 # recomp-ws-spawn Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-spawn. Update Purpose after archive.
+
+Records the widescreen spawn and staging analysis (spawn anchors, object activation, X-axis staging), which found nothing to widen in 1P: track furniture is BG and the only objects are the two riders. A finished investigation.
+
 ## Requirements
 ### Requirement: Spawn and staging path identified
 

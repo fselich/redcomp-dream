@@ -1,7 +1,9 @@
 # recomp-ingame-options-menu Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ingame-options. Update Purpose after archive.
+
+The in-game options menu (F10 / Select+L): the host title-menu hook, rows and values, live application, saving to config.ini and locked options.
+
 ## Requirements
 ### Requirement: Host title-menu hook
 

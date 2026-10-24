@@ -1,7 +1,9 @@
 # recomp-ws-radar Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-radar. Update Purpose after archive.
+
+The local radar: a window of the track table around the player with player and rival markers, presentation-only, switchable, shown in live 1P races.
+
 ## Requirements
 ### Requirement: Local radar window
 

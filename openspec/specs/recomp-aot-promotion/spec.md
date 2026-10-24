@@ -1,7 +1,9 @@
 # recomp-aot-promotion Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-aot-promotion. Update Purpose after archive.
+
+Rules for promoting interpreted routines to AOT code from profiles: a conservative promotion set, an unchanged baseline and replay equivalence. A finished investigation.
+
 ## Requirements
 ### Requirement: Preserved baseline
 

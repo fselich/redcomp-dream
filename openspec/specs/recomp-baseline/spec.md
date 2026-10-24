@@ -1,7 +1,9 @@
 # recomp-baseline Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-recomp-baseline. Update Purpose after archive.
+
+The recompilation baseline: pinned framework revision, the ROM identity gate, ROM-derived output kept out of the tree, deterministic generation and coverage metrics.
+
 ## Requirements
 ### Requirement: Pinned toolchain revision
 

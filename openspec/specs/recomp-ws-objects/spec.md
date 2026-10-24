@@ -1,7 +1,9 @@
 # recomp-ws-objects Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-objects. Update Purpose after archive.
+
+Riders in the widescreen margins: the symmetric cull widening, signed OAM X handling, the X-high fix and its gate, with spawn and progression untouched.
+
 ## Requirements
 ### Requirement: Object path identified
 

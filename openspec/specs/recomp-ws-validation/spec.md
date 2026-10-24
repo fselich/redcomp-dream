@@ -1,7 +1,9 @@
 # recomp-ws-validation Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-validation. Update Purpose after archive.
+
+Records the first widescreen validation pass over the 1P tracks, HUD variants, objects, menus and transitions. A finished validation; the current gate is in docs/VALIDATION.md.
+
 ## Requirements
 ### Requirement: 1P track matrix
 

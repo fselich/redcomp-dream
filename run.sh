@@ -4,7 +4,7 @@
 # The host anchors config.ini, keybinds.ini and saves/ beside the executable,
 # so this script changes to game/build-local/ before exec'ing the game. Extra
 # args are passed through, e.g.:
-#   ./run.sh --script tools/scripts/ws-native-map-spike/route-dragster-move.txt
+#   ./run.sh --script "$PWD/tools/scripts/ws-native-map-spike/route-dragster-move.txt"
 #   SNESRECOMP_WS_MINIMAP=0 ./run.sh
 set -euo pipefail
 

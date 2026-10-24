@@ -1,7 +1,9 @@
 # recomp-ws-map-decode Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-map-decode. Update Purpose after archive.
+
+Records the decode of the track format (ROM directory, RNC1 blobs, the $7F track image) and the offline full-track render. A finished investigation; the format is described in docs/formats/TRACK_FORMAT.md.
+
 ## Requirements
 ### Requirement: WRAM map decode
 

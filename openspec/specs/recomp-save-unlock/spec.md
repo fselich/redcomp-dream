@@ -1,7 +1,9 @@
 # recomp-save-unlock Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-unlock-tours. Update Purpose after archive.
+
+The battery-save format the port relies on and the opt-in unlock of all tours: the SRAM tool, writing only into a valid image, and the permanence of the unlock.
+
 ## Requirements
 ### Requirement: Documented progress format
 

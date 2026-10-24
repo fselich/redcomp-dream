@@ -1,7 +1,9 @@
 # recomp-aot-dispatch Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-aot-dispatch. Update Purpose after archive.
+
+Records how the race camera routine was made to run as ahead-of-time (AOT) code (a function-boundary misclassification in the analyzer input), with its replay-equivalence check. A finished investigation.
+
 ## Requirements
 ### Requirement: Diagnosed entry path
 

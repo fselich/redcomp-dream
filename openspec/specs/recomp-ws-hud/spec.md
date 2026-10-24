@@ -1,7 +1,9 @@
 # recomp-ws-hud Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-hud. Update Purpose after archive.
+
+The widescreen HUD: rigid groups anchored to the wide frame, the lower rows kept native, an independent switch, and 4:3 and menus unchanged.
+
 ## Requirements
 ### Requirement: HUD layout measured
 

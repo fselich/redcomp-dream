@@ -1,7 +1,9 @@
 # recomp-native-map-spike Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-native-map-spike. Update Purpose after archive.
+
+Records the native-map spike that characterised the level tables and the BG1 uploader and ended in a no-go for a VRAM-based margin renderer. A finished investigation.
+
 ## Requirements
 ### Requirement: Full level table characterized
 

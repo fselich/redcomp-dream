@@ -1,7 +1,9 @@
 # recomp-ws-hdma Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-hdma. Update Purpose after archive.
+
+Records the analysis of the game's HDMA tables for the widescreen margins and the decision that BG scroll HDMA needs no margin extension. A finished investigation.
+
 ## Requirements
 ### Requirement: HDMA builder identified
 

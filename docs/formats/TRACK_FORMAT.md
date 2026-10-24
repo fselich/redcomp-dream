@@ -1,9 +1,6 @@
-# Uniracers track format (BG1 track map)
+# Track format (BG1 track map)
 
-Date: 2026-10-21
-Source: OpenSpec change `uniracers-ws-map-decode` (report in
-`openspec/changes/uniracers-ws-map-decode/report.md`; working notes and tools in
-`work/ws-map-decode/`, gitignored and ROM-derived).
+How a Uniracers track is stored in ROM and in WRAM, as decoded in the archived change `uniracers-ws-map-decode` (evidence in `openspec/changes/archive/2026-10-22-uniracers-ws-map-decode/report.md`). The port reads this image at run time for the widescreen margins and the radar.
 
 ROM: Uniracers (USA), CRC32 `383858c7`. Addresses are LoROM.
 
@@ -64,7 +61,7 @@ Rob Northen Compression (ProPack), **method 1**. Header, 18 bytes, big-endian:
 
 The game's unpacker is `$81:B8F1`. Stack arguments: dest offset, source bank,
 source address, data bank. It runs over several frames during the load. The
-Python port `work/ws-map-decode/scripts/rnc.py` (after public-domain `dernc.c`)
+Python port `tools/scripts/ws-map-decode/rnc.py` (after public-domain `dernc.c`)
 reproduces `$7F` byte for byte on all traced tracks.
 
 ## 4. Unpacked image (`$7F:0000`)
@@ -89,8 +86,8 @@ outside the grid in Y -> 0x0000
 The grid is **circular in X**: lookups wrap `wx` modulo the grid width.
 Found on a tour-2 track (grid 64×256 blocks = 256×1024 cells): the race
 crosses the right edge and the anchor re-appeared at `ax ± 256`
-(`work/ws-source/xwrap/`). The tour-1 tracks never cross the X edge, so their
-BG1 probe scores are unchanged (0 wrong on all six captures).
+(`openspec/changes/archive/2026-10-22-uniracers-ws-ghost-xhigh/report.md`).
+The tour-1 tracks never cross the X edge.
 
 Grid shapes across the 45 tracks: 256×64 (22), 128×128 (11), 1024×16 (4),
 64×256 (4), 512×32 (3), 16×1024 (1).
@@ -120,7 +117,7 @@ posts use other characters.
 | Pixels (Bowl 2300 window) | 3,741/3,741 opaque BG1 pixels equal |
 | Topology vs external maps | Zoom Zoo, Monster, Bowl, Megajump match |
 
-## 7. Tools (`work/ws-map-decode/scripts/`)
+## 7. Tools (`tools/scripts/ws-map-decode/`)
 
 | Script | Use |
 |---|---|
@@ -130,38 +127,21 @@ posts use other characters.
 | `track_cell.py` | `TrackMap(wram, cols).cell(wx, wy)` |
 | `render_track.py` | colour BG1 render (`wram` / `rom:<track>` / `blob:<file>`) |
 | `track_shape.py` | 1-px-per-cell shape map |
-| `validate_probe.py`, `compare_window.py` | validation against the probe / a screenshot |
+| `validate_probe.py`, `compare_window.py` | validation against a BG probe capture / a screenshot |
+| `seg_layout.py`, `trace_loader.py`, `trace_decomp_args.py` | the load-time traces used to find the directory and the unpacker |
 
 ## 8. Runtime use
 
-Implemented in `openspec/changes/uniracers-ws-source/` (`SNESRECOMP_WS_OFFWINDOW=source`,
-`src/game_rtl.c` block "Track-table source"). The 16:9 margin hook reads BG1
-cells from live `$7F` at `world + anchor`:
+`game/src/ws_source.c` reads the live `$7F` image with the formulas above:
 
-- the anchor is searched from verified native cells (ignoring `0x0000` and
-  words absent from the piece library);
-- up to 8 ambiguous anchors are kept, and a cell is served only where they
-  agree;
-- every frame, the anchor is re-checked against the native view.
+- the BG1 margins (`source` policy) are served from the table at `world + anchor`; the anchor is searched from cells the native view has verified and re-checked every frame (see [`TRACK_MARGIN.md`](../TRACK_MARGIN.md));
+- the radar (`game/src/ws_radar.c`) draws a 128×64-cell window of the table around the player through the same anchor.
 
-**Default since `uniracers-ws-source-default`:** with widescreen on and
-`SNESRECOMP_WS_OFFWINDOW` unset, BG1 margins use `source`. Other values are
-`ring`, `ghost`, `clamp` (global BG1 clamp) and `wrap` (raw ring).
-
-Results: 0 wrong cells on the five 1P tracks; both margins fully served after
-a ~100-frame race-start wait; no measurable CPU cost. See its `report.md`.
-
-## 8b. Ultrawide
-
-`openspec/changes/uniracers-ws-ultrawide/`: the race frame follows the target
-aspect (`SNESRECOMP_WS_ASPECT`, default auto = max(16:9, window)) up to
-**512 px**. 512 px is the 9-bit OAM X limit: margin E ≤ 128. The object cull
-and the HUD segments are derived from E. BG1 stays exact at every width
-because it is served from this table.
+Both are presentation-only: nothing writes bank `$7F`.
 
 ## 9. Unknown
 
 - Header `0002–0009`.
 - Collision/surface data source, which a track editor needs.
 - Names of the remaining 30 tracks.
-- BG2, objects, CPU ghost data, finish/lap logic.
+- BG2, objects, rival rider data, finish/lap logic.

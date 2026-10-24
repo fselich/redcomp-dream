@@ -1,7 +1,9 @@
 # recomp-ws-offwindow Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-offwindow. Update Purpose after archive.
+
+Records the proof of the BG1 ring formula with same-run evidence and the pixel-source probe that the validation gate still uses. A finished investigation; the model is in docs/formats/BG1_RING.md.
+
 ## Requirements
 ### Requirement: Ring formula proven
 
