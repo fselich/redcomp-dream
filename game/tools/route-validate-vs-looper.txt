@@ -1,0 +1,28 @@
+# VS split-screen route: main menu -> VS -> PICK PLAYER ONE -> PICK PLAYER
+# TWO -> PICK TOUR -> PICK TRACK (SHUFFLER/LOOPER) -> NOW PLAYING -> race.
+# Waits for the race screen mode, then both pads accelerate.
+wait 640
+press down 2
+wait 60
+press down 2
+wait 60
+press b 2
+wait 500
+press b 2
+wait 500
+press p2:down 2
+wait 60
+press p2:b 2
+wait 500
+press p1:down 2
+wait 60
+press p1:b 2
+wait 500
+press b 2
+wait 500
+press b 2
+wait 500
+press b 2
+wait 500
+until16 0300 == 0001 30000
+press right+p2:right 3000

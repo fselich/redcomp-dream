@@ -4,7 +4,7 @@ A native recompilation of **Uniracers** (USA) for desktop, built on [snesrecomp]
 
 The port is playable. On top of the original game it adds:
 
-- **widescreen races** from 16:9 up to 512 px wide, with the extra track drawn from the game's own track data, the HUD spread to the corners and riders kept correct in the margins;
+- **widescreen races** from 16:9 up to 512 px wide, in 1P and in 2P/VS split screen, with the extra track drawn from the game's own track data, the HUD spread to the corners and riders kept correct in the margins;
 - a small **radar** in the bottom-right corner with your position and the rival's;
 - an **in-game options menu** (F10 or Select+L) that applies every option live and saves it;
 - an opt-in **unlock of all nine tours**;
@@ -61,7 +61,7 @@ MiniMap = 1          ; the radar
 UnlockAllTours = 0
 ```
 
-Widescreen and the radar only appear during a live race. **`UnlockAllTours` is permanent for that save**: it raises the tour reveal stage in the battery save, which the game stores on exit; turning it off later does not hide the tours again. Keep a copy of `game/build-local/saves/save.srm` if you may want to go back.
+Widescreen appears during a live race in 1P and in 2P/VS split screen; the radar remains 1P-only. **`UnlockAllTours` is permanent for that save**: it raises the tour reveal stage in the battery save, which the game stores on exit; turning it off later does not hide the tours again. Keep a copy of `game/build-local/saves/save.srm` if you may want to go back.
 
 Every option, its environment override, the precedence rules and the debug variables are in [`docs/CONFIG.md`](docs/CONFIG.md).
 

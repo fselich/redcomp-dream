@@ -68,6 +68,12 @@ CASES=(
   "monster|tools/scripts/ws-leading-edge/route-monster-move.txt|2300|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9"
   "zoomzoo512|tools/scripts/ws-native-map-spike/route-zoomzoo-move.txt|3505|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=32:9"
   "logs|game/tools/route-validate-dragster.txt|2800|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9 SNESRECOMP_WS_OFFWINDOW=source"
+  "2p-native|game/tools/route-validate-2p-looper.txt|5000|SNESRECOMP_WS=0"
+  "2p-16x9|game/tools/route-validate-2p-looper.txt|5000|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9"
+  "2p-21x9|game/tools/route-validate-2p-looper.txt|5000|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=21:9"
+  "2p-512|game/tools/route-validate-2p-looper.txt|5000|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=32:9"
+  "2p-clamp|game/tools/route-validate-2p-looper.txt|5000|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9 SNESRECOMP_WS_OFFWINDOW=clamp"
+  "vs-16x9|game/tools/route-validate-vs-looper.txt|5000|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9"
 )
 
 want_case() {

@@ -3,6 +3,10 @@
  * Reads the unpacked Uniracers track table from WRAM bank $7F, searches the
  * world-to-table anchor from verified native cells and serves margin words.
  * Presentation-only: reads guest memory, writes nothing.
+ *
+ * 2P split screen has two independent cameras and two BG1 maps, so the anchor
+ * set, scene generation, race start and seen-table reads are per viewport.
+ * The track grid header and the piece-library word index are shared.
  */
 #include "ws_source.h"
 
@@ -51,18 +55,23 @@ typedef struct {
     uint16_t tile;
 } WsSrcSample;
 
-static int s_src_valid;                      /* number of live anchors */
-static int32_t s_src_ax[WS_SRC_MAX_ANCHORS], s_src_ay[WS_SRC_MAX_ANCHORS];
-static int s_src_cols, s_src_rows;          /* grid size in cells */
-static unsigned s_src_generation;
-static int s_src_race_frame0 = -1;          /* first live frame of this scene */
-static uint8_t s_src_word_present[0x10000 / 8];  /* words in the piece library */
+typedef struct {
+    int valid;                                  /* number of live anchors */
+    int32_t ax[WS_SRC_MAX_ANCHORS], ay[WS_SRC_MAX_ANCHORS];
+    unsigned generation;
+    int race_frame0;                            /* first live frame of this scene */
+} WsSrcVp;
+
+static WsSrcVp s_src_vp[WS_VP_MAX];
+static int s_src_cols, s_src_rows;             /* grid size in cells */
+static uint8_t s_src_word_present[0x10000 / 8]; /* words in the piece library */
 static uint16_t s_src_present_end;              /* library end it was built for */
 
-static void WsSrcLog(const char *fmt, ...)
+static void WsSrcLog(int vp, const char *fmt, ...)
 {
     FILE *f = WsLogOpen("SNESRECOMP_WS_SOURCE_LOG", NULL);
     if (!f) return;
+    if (vp != 0) fprintf(f, "vp=%d ", vp);
     va_list ap;
     va_start(ap, fmt);
     vfprintf(f, fmt, ap);
@@ -125,14 +134,14 @@ static int WsSrcCell(int32_t tx, int32_t ty, uint16_t *out)
     return 1;
 }
 
-/* Verified native cells usable as evidence: this frame's only, or every cell
- * still held in the seen table (all_frames). */
-static int WsSrcSamples(WsSrcSample *out, int max, int all_frames)
+/* Verified native cells of one viewport usable as evidence: this frame's
+ * only, or every cell still held in the seen table (all_frames). */
+static int WsSrcSamples(int vp, WsSrcSample *out, int max, int all_frames)
 {
     int n = 0;
     for (int cy = 0; cy < WS_RING_CELLS && n < max; cy++) {
         for (int cx = 0; cx < WS_RING_CELLS && n < max; cx++) {
-            const WsRingSeen *s = WsRingSeenCell(cy, cx);
+            const WsRingSeen *s = WsRingSeenCell(vp, cy, cx);
             if (!s->valid || !WsSrcWordUsable(s->tile))
                 continue;
             if (!all_frames && s->frame != snes_frame_counter)
@@ -160,18 +169,19 @@ static int WsSrcAgreement(const WsSrcSample *smp, int n, int32_t ax,
     return ok;
 }
 
-/* Find the unique anchor matching >= 95 % of this frame's verified cells.
+/* Find the unique anchor matching >= 95 % of this viewport's verified cells.
  * Seeds from the rarest sampled word; candidate positions come from a
  * per-piece index of where that word occurs. */
-static void WsSrcSearch(void)
+static void WsSrcSearch(int vp)
 {
+    WsSrcVp *v = &s_src_vp[vp];
     static WsSrcSample smp[WS_SRC_MAX_SAMPLES];
     static uint16_t piece_mask[WS_SRC_MAX_PIECES];
     if (!WsSrcHeader()) return;
-    int n = WsSrcSamples(smp, WS_SRC_MAX_SAMPLES, 1);
+    int n = WsSrcSamples(vp, smp, WS_SRC_MAX_SAMPLES, 1);
     if (n < WS_SRC_MIN_SAMPLES) {
         if (snes_frame_counter % 30 == 0)
-            WsSrcLog("%d anchor wait samples=%d\n", snes_frame_counter, n);
+            WsSrcLog(vp, "%d anchor wait samples=%d\n", snes_frame_counter, n);
         return;
     }
     int max_miss = n / 20;                       /* >= 95 % agreement */
@@ -236,102 +246,106 @@ static void WsSrcSearch(void)
         double ms = 1000.0 * (double)(clock() - t0) / CLOCKS_PER_SEC;
         if (survivors >= 1 && survivors <= WS_SRC_MAX_ANCHORS) {
             for (int i = 0; i < survivors; i++) {
-                s_src_ax[i] = sur_ax[i];
-                s_src_ay[i] = sur_ay[i];
+                v->ax[i] = sur_ax[i];
+                v->ay[i] = sur_ay[i];
             }
-            s_src_valid = survivors;
-            WsSrcLog("%d anchor ok ax=%d ay=%d anchors=%d grid=%dx%d samples=%d "
+            v->valid = survivors;
+            WsSrcLog(vp, "%d anchor ok ax=%d ay=%d anchors=%d grid=%dx%d samples=%d "
                      "seed=%04x candidates=%d latency=%d search_ms=%.3f\n",
                      snes_frame_counter, sur_ax[0], sur_ay[0], survivors,
                      s_src_cols, s_src_rows, n, word, candidates,
-                     s_src_race_frame0 >= 0 ? snes_frame_counter - s_src_race_frame0 : -1,
+                     v->race_frame0 >= 0 ? snes_frame_counter - v->race_frame0 : -1,
                      ms);
             return;
         }
-        WsSrcLog("%d anchor retry seed=%04x candidates=%d survivors=%d "
+        WsSrcLog(vp, "%d anchor retry seed=%04x candidates=%d survivors=%d "
                  "search_ms=%.3f\n", snes_frame_counter, word, candidates,
                  survivors, ms);
         if (survivors > 0) return;      /* too ambiguous: wait for the camera */
     }
 }
 
-/* After each drawn frame: keep, verify or (re)establish the anchor. */
-static void WsSrcFrame(void)
+/* After each drawn frame: keep, verify or (re)establish the viewport's anchor. */
+static void WsSrcFrame(int vp)
 {
-    if (s_src_generation != WsRingSceneGeneration()) {
-        s_src_generation = WsRingSceneGeneration();
-        if (s_src_valid)
-            WsSrcLog("%d anchor dropped: scene reset\n", snes_frame_counter);
-        s_src_valid = 0;
-        s_src_race_frame0 = snes_frame_counter;
+    WsSrcVp *v = &s_src_vp[vp];
+    if (v->generation != (int)WsRingSceneGeneration(vp)) {
+        v->generation = WsRingSceneGeneration(vp);
+        if (v->valid)
+            WsSrcLog(vp, "%d anchor dropped: scene reset\n", snes_frame_counter);
+        v->valid = 0;
+        v->race_frame0 = snes_frame_counter;
     }
-    if (!s_src_valid) {
-        WsSrcSearch();
+    if (!v->valid) {
+        WsSrcSearch(vp);
         return;
     }
     if (!WsSrcHeader()) {
-        s_src_valid = 0;
-        WsSrcLog("%d anchor dropped: header invalid\n", snes_frame_counter);
+        v->valid = 0;
+        WsSrcLog(vp, "%d anchor dropped: header invalid\n", snes_frame_counter);
         return;
     }
     WsSrcSample smp[WS_SRC_CHECK_SAMPLES];
-    int n = WsSrcSamples(smp, WS_SRC_CHECK_SAMPLES, 0);
+    int n = WsSrcSamples(vp, smp, WS_SRC_CHECK_SAMPLES, 0);
     if (n == 0) return;
-    int kept = 0, before = s_src_valid;
-    for (int i = 0; i < s_src_valid; i++) {
-        int ok = WsSrcAgreement(smp, n, s_src_ax[i], s_src_ay[i], n);
+    int kept = 0, before = v->valid;
+    for (int i = 0; i < v->valid; i++) {
+        int ok = WsSrcAgreement(smp, n, v->ax[i], v->ay[i], n);
         if (ok * 20 < n * 19) {
-            WsSrcLog("%d anchor (%d,%d) dropped: self-check %d/%d\n",
-                     snes_frame_counter, s_src_ax[i], s_src_ay[i], ok, n);
+            WsSrcLog(vp, "%d anchor (%d,%d) dropped: self-check %d/%d\n",
+                     snes_frame_counter, v->ax[i], v->ay[i], ok, n);
             continue;
         }
         if (ok != n)
-            WsSrcLog("%d self-check (%d,%d) %d/%d\n", snes_frame_counter,
-                     s_src_ax[i], s_src_ay[i], ok, n);
-        s_src_ax[kept] = s_src_ax[i];
-        s_src_ay[kept] = s_src_ay[i];
+            WsSrcLog(vp, "%d self-check (%d,%d) %d/%d\n", snes_frame_counter,
+                     v->ax[i], v->ay[i], ok, n);
+        v->ax[kept] = v->ax[i];
+        v->ay[kept] = v->ay[i];
         kept++;
     }
-    s_src_valid = kept;
+    v->valid = kept;
     if (!kept) {
-        WsSrcLog("%d anchor dropped: no anchor passes the self-check\n",
+        WsSrcLog(vp, "%d anchor dropped: no anchor passes the self-check\n",
                  snes_frame_counter);
     } else if (kept != before && kept == 1) {
-        WsSrcLog("%d anchor resolved ax=%d ay=%d\n", snes_frame_counter,
-                 s_src_ax[0], s_src_ay[0]);
+        WsSrcLog(vp, "%d anchor resolved ax=%d ay=%d\n", snes_frame_counter,
+                 v->ax[0], v->ay[0]);
     }
 }
 
 static void WsSrcInvalidate(void)
 {
-    if (s_src_valid)
-        WsSrcLog("%d anchor dropped: race not live\n", snes_frame_counter);
-    s_src_valid = 0;
+    for (int vp = 0; vp < WS_VP_MAX; vp++) {
+        WsSrcVp *v = &s_src_vp[vp];
+        if (v->valid)
+            WsSrcLog(vp, "%d anchor dropped: race not live\n", snes_frame_counter);
+        v->valid = 0;
+    }
 }
 
-
-int WsSourceValid(void) { return s_src_valid > 0; }
-int32_t WsSourceAnchorX(int i) { return s_src_ax[i]; }
-int32_t WsSourceAnchorY(int i) { return s_src_ay[i]; }
+int WsSourceValid(void) { return s_src_vp[0].valid > 0; }
+int32_t WsSourceAnchorX(int i) { return s_src_vp[0].ax[i]; }
+int32_t WsSourceAnchorY(int i) { return s_src_vp[0].ay[i]; }
 
 int WsSourceCell(int32_t tx, int32_t ty, uint16_t *out)
 {
     return WsSrcCell(tx, ty, out);
 }
 
-int WsSourceAgree(int32_t wx, int32_t wy, uint16_t *out)
+int WsSourceAgree(int vp, int32_t wx, int32_t wy, uint16_t *out)
 {
-    if (s_src_valid <= 0) return 0;
+    WsSrcVp *v = &s_src_vp[vp < 0 || vp >= WS_VP_MAX ? 0 : vp];
+    if (v->valid <= 0) return 0;
     uint16_t w;
-    if (!WsSrcCell(wx + s_src_ax[0], wy + s_src_ay[0], &w)) return 0;
-    for (int i = 1; i < s_src_valid; i++) {
+    if (!WsSrcCell(wx + v->ax[0], wy + v->ay[0], &w)) return 0;
+    for (int i = 1; i < v->valid; i++) {
         uint16_t wi;
-        if (!WsSrcCell(wx + s_src_ax[i], wy + s_src_ay[i], &wi) || wi != w)
+        if (!WsSrcCell(wx + v->ax[i], wy + v->ay[i], &wi) || wi != w)
             return 0;
     }
     *out = w;
     return 1;
 }
 
-void WsSourceFrame(void) { WsSrcFrame(); }
+void WsSourceFrame(int vp) { WsSrcFrame(vp); }
 void WsSourceInvalidate(void) { WsSrcInvalidate(); }

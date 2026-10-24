@@ -28,8 +28,8 @@ The port is a static recompilation of the Uniracers ROM on top of the [snesrecom
 | `ws_menu.[ch]` | in-game options menu (F10 / Select+L), a host title-menu overlay | nothing |
 | `ws_cull.[ch]` | rider cull-window widening | **guest WRAM** (`$0421`/`$0423`) |
 | `ws_hud.[ch]` | BG3 elastic band and clamp bands | PPU configuration |
-| `ws_oam_fix.[ch]` | rider OAM X-high, parked pair and sentinel fixes | PPU OAM copy |
-| `ws_margin.[ch]` | BG1 margin policy (`source`/`clamp`), hook installation, the tile hook, the BG1 clamp | PPU configuration |
+| `ws_oam_fix.[ch]` | 1P X-high/parked pair/sentinel; 2P frame-level sentinel/X and the per-line high/size synthesis for the bottom half | PPU OAM copy |
+| `ws_margin.[ch]` | per-viewport BG1 margin policy (`source`/`clamp`), hook installation, the tile hook, the BG1 clamp; the line hook also calls the 2P per-line OAM fix | PPU configuration |
 | `ws_ring.[ch]` | BG1 ring observation: seen table, scroll unwrap | nothing |
 | `ws_source.[ch]` | `$7F` track-table reader and the source anchor | nothing |
 | `ws_radar.[ch]` | 64×32 radar panel | a PPU extra object |
@@ -60,6 +60,12 @@ GameAfterRunFrame
 ```
 
 Settings are loaded once after the host reads its configuration (`GameAfterConfig`) and then read every frame, so the menu applies changes live. `GameSessionReset` resets the beam driver on a rematch or soft return.
+
+In 2P/VS, wide or native 4:3, the beam line hook also calls
+`WsOamLineFix(ppu, line)` before the BG1 margin observation; it sets the
+line's half rider slots to the big size bit and the true X high bit in the
+PPU OAM copy, and hides the half's sentinel in native. The line hook is
+installed for 2P even when the margin policy is `clamp`.
 
 ## Framework patch
 

@@ -36,7 +36,7 @@ With the option off, BG3 is clamped to 256 px over the whole frame.
 
 **Cull window** (`game/src/ws_cull.c`, option `[Widescreen] Cull`). The game culls riders whose screen X is outside the window `$0421`..`$0423` (left and right edge words). The port widens that window by `E` on each side (scaled by the zoom shift `$03ED`, 2 on Zoom Zoo) so riders stay visible in the margins, and restores the game's values when widescreen is off or the race ends. Those words are written only by the rider setup at `$81:A385` and read only by the five cull compares at `$82:AD19/ADE7/AEA7/AF75/AFFE`, so the change affects nothing else: spawn, AI, camera, collision and RNG never see it.
 
-**OAM fixes** (`game/src/ws_oam_fix.c`, 1P only, debug switch `SNESRECOMP_WS_OAM_XHIGH`). They edit only the PPU's uploaded OAM copy, never guest memory:
+**OAM fixes** (`game/src/ws_oam_fix.c`, debug switch `SNESRECOMP_WS_OAM_XHIGH`). The rules below are the 1P ones; 2P/VS uses four slots and a per-line high/size pass, see [`TWO_PLAYER.md`](TWO_PLAYER.md). They edit only the PPU's uploaded OAM copy, never guest memory:
 
 - *X high bit.* The game sets the OAM X high bit only for negative X; natively a positive X never reaches 256. With the widened cull a rider in `[256, 256 + E)` would decode as `X - 256` and appear on the left. The port sets the missing bit from the rider's true WRAM position.
 - *Parked 2P pair.* In a 1P race slots 96/97 hold the unused 2P riders at a negative X with the high bit set. At `E ≥ 97` that value falls inside the right margin and shows a sliver; the port moves them below the field.
@@ -50,7 +50,24 @@ Evidence: `openspec/changes/archive/2026-10-22-uniracers-ws-ghost-xhigh/report.m
 
 It needs the `source` anchor to place the window, so it appears only in a live 1P race with `Margin = source`, after the anchor is found (about 100 frames into the race), and never in netplay.
 
+## Two-player split screen
+
+A live 2P or VS race is detected by `$0DDB` (not `$00B4`) together with
+`$0EE9 == 0` and `$0300 <= 1`. Each half is widened by the same `E`; the split
+stays at line 112, with the divider on 112..113 and the bottom BG1 starting on
+line 114. The bottom half uses its own BG1 map base (`0x1C00` on Looper,
+against `0x0C00` above) and its own camera, so the ring observation, scroll
+unwrap, seen table and source anchor are per viewport. The HUD uses three
+elastic bands (top half, divider, bottom half) and no clamp band, with the
+BG3 widen gate at line 10; the player name and timer share the right segment.
+Riders use four OAM slots (96..99) with the per-half camera and the `+$70`
+bottom offset. The radar stays 1P-only. Details and measurements are in
+[`TWO_PLAYER.md`](TWO_PLAYER.md).
+
 ## Limits
 
-- Two-player split screen is not adapted: the OAM fixes and the radar are 1P only (`$0DDB == 0`). Widescreen in 2P is on the roadmap.
+- The radar is 1P only. The two-player OAM fix has a frame-level pass
+  (sentinels and the missing X bit) and a per-line high-table pass that makes
+  the bottom rider big; the framework's draw does not replay OAMDATA, so the
+  per-line state is synthesised from the staged entries and WRAM.
 - The cull window is the only guest write and it feeds only the cull compares, so turning widescreen on or off does not change how a race plays out.

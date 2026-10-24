@@ -53,11 +53,22 @@ int WsWideEnabled(void)
 
 int WsInLiveRace(void)
 {
-    /* kRamRaceMode is 1 on tour 1 but 0x0B on later tours: only "not zero" is
-     * a race signal. kRamScreenMode <= 1 excludes the menus; kRamPauseFinish
-     * is nonzero in pause and after the finish. */
-    return g_ram[kRamRaceMode] != 0 && g_ram[kRamPauseFinish] == 0 &&
-           g_ram[kRamScreenMode] <= 1;
+    /* kRamPauseFinish is nonzero in pause and after the finish; kRamScreenMode
+     * <= 1 excludes the menus and selection screens. In 1P kRamRaceMode is 1
+     * on tour 1 and 0x0B on later tours (only "not zero" is a race signal).
+     * In 2P/VS kRamRaceMode is 0 but kRamTwoPlayer is 1 for the split-screen
+     * race. */
+    if (g_ram[kRamPauseFinish] != 0 || g_ram[kRamScreenMode] > 1) return 0;
+    if (g_ram[kRamTwoPlayer] != 0) return 1;       /* 2P/VS split screen */
+    return g_ram[kRamRaceMode] != 0;               /* 1P: 1 or 0x0B */
+}
+
+int WsViewportOfLine(int two_player, int line)
+{
+    if (!two_player) return 0;
+    if (line < WS_VP_DIVIDER_FIRST) return 0;
+    if (line < WS_VP_BOTTOM_FIRST) return -1;
+    return 1;
 }
 
 int WsExtra(void)

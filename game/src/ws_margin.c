@@ -14,6 +14,7 @@
 #include "common_rtl.h"
 #include "variables.h"
 #include "ws_debug.h"
+#include "ws_oam_fix.h"
 #include "ws_ring.h"
 #include "ws_settings.h"
 #include "ws_source.h"
@@ -22,10 +23,25 @@
 #include <string.h>
 
 static int s_frame_policy;          /* policy hooked for the current draw */
-static uint8_t s_logged[WS_RING_CELLS][WS_RING_CELLS];
+static int s_two_player;            /* viewport split is active this frame */
+static int s_line_hook;             /* WsMarginLine installed this frame */
+static uint8_t s_logged[WS_VP_MAX][WS_RING_CELLS][WS_RING_CELLS];
 static uint16_t s_mask_word = 0xFFFF;
 static int s_announced;
 static int s_live_prev = -1;
+
+static void Ws2pLineLog(Ppu *ppu, int line)
+{
+    if (g_ram[kRamTwoPlayer] == 0) return;
+    FILE *f = WsLogOpen("SNESRECOMP_WS_2P_LINE_LOG",
+                        "# frame,line,vp,map_base,bgmode,h,v,main_screen_layers");
+    if (!f) return;
+    fprintf(f, "%d,%d,%d,0x%04x,0x%02x,%u,%u,0x%02x\n",
+            snes_frame_counter, line,
+            WsViewportOfLine(g_ram[kRamTwoPlayer] != 0, line),
+            PPU_bgTilemapAdr(ppu, 0), ppu->bgmode,
+            ppu->hScroll[0], ppu->vScroll[0], ppu->screenEnabled[0]);
+}
 
 /* SNESRECOMP_WS_OFFWINDOW, else SNESRECOMP_WS_TRACK_CLAMP (clamp), else
  * [Widescreen] Margin, else source; the settings model maps the values of
@@ -98,10 +114,15 @@ static void WsMarginLine(Ppu *ppu, unsigned line, void *context)
 {
     (void)context;
     if (!ppu) return;
+    Ws2pLineLog(ppu, (int)line);
+    WsOamLineFix(ppu, (int)line);
+    if (s_frame_policy != WS_MARGIN_SOURCE) return;
+    int vp = WsViewportOfLine(s_two_player, (int)line);
+    if (vp < 0) return;
     if ((int)line == WS_RING_LINE_FIRST) {
         uint16_t map_base = PPU_bgTilemapAdr(ppu, 0);
         uint16_t raw_h = ppu->hScroll[0], raw_v = ppu->vScroll[0];
-        int reset = WsRingLine(ppu, (int)line);
+        int reset = WsRingLine(ppu, (int)line, vp);
         if (reset && WsMarginVerbose())
             fprintf(stderr, "[ws-ow] scene reset: base=%04x mode=%02x "
                             "scroll=%u,%u\n", map_base, ppu->bgmode,
@@ -119,7 +140,11 @@ static void WsMarginLine(Ppu *ppu, unsigned line, void *context)
         }
         return;
     }
-    WsRingLine(ppu, (int)line);
+    int reset = WsRingLine(ppu, (int)line, vp);
+    if (reset && WsMarginVerbose())
+        fprintf(stderr, "[ws-ow] scene reset vp=%d: base=%04x mode=%02x "
+                        "scroll=%u,%u\n", vp, PPU_bgTilemapAdr(ppu, 0),
+                ppu->bgmode, ppu->hScroll[0], ppu->vScroll[0]);
 }
 
 /* Renderer hook: the tile word for a margin sample of BG1. */
@@ -128,34 +153,33 @@ static uint16_t WsMarginTile(Ppu *ppu, unsigned layer, int screen_x,
                              void *context)
 {
     (void)context;
-    if (!WsRingFrameActive() || layer != 0) return tile;
+    int vp = WsViewportOfLine(s_two_player, line);
+    if (vp < 0 || layer != 0 || !WsRingFrameActive(vp)) return tile;
     if (screen_x >= 0 && screen_x < 256) return tile;
 
     int32_t h, v;
-    WsRingLineScroll(ppu, &h, &v);
+    WsRingLineScroll(ppu, vp, &h, &v);
     int32_t wx = WsRingFloor16((int64_t)h + screen_x);
     int32_t wy = WsRingFloor16((int64_t)v + line);
     int cx = wx & 31, cy = wy & 31;
-    if ((sc & 0x7FFF) != WsRingMapAddr(cx, cy)) return tile;
+    if ((sc & 0x7FFF) != WsRingMapAddr(vp, cx, cy)) return tile;
 
-    const WsRingSeen *s = WsRingSeenCell(cy, cx);
+    const WsRingSeen *s = WsRingSeenCell(vp, cy, cx);
     if (s->valid && s->wx == wx && s->wy == wy && s->tile == tile)
         return tile;
 
-    if (WsSourceValid()) {
-        uint16_t w;
-        if (WsSourceAgree(wx, wy, &w)) {
-            if (!s_logged[cy][cx]) {
-                s_logged[cy][cx] = 1;
-                WsMarginLogVisit(cx, cy, wx, wy, tile, w, 0);
-            }
-            return w;
+    uint16_t w;
+    if (WsSourceAgree(vp, wx, wy, &w)) {
+        if (!s_logged[vp][cy][cx]) {
+            s_logged[vp][cy][cx] = 1;
+            WsMarginLogVisit(cx, cy, wx, wy, tile, w, 0);
         }
+        return w;
     }
 
     int masked = s_mask_word != 0xFFFF;
-    if (!s_logged[cy][cx]) {
-        s_logged[cy][cx] = 1;
+    if (!s_logged[vp][cy][cx]) {
+        s_logged[vp][cy][cx] = 1;
         WsMarginLogVisit(cx, cy, wx, wy, tile, masked ? s_mask_word : tile,
                          masked);
     }
@@ -164,6 +188,7 @@ static uint16_t WsMarginTile(Ppu *ppu, unsigned layer, int screen_x,
 
 void WsMarginFrameBegin(const WsFrameCtx *ctx)
 {
+    s_two_player = ctx->two_player;
     int policy = ctx->active ? WsMarginPolicy() : WS_MARGIN_NONE;
     s_frame_policy = policy == WS_MARGIN_SOURCE ? policy : WS_MARGIN_NONE;
     if (s_frame_policy == WS_MARGIN_NONE) WsMarginReset();
@@ -171,9 +196,13 @@ void WsMarginFrameBegin(const WsFrameCtx *ctx)
         WsMarginLogLive(ctx->live);
     if (policy == WS_MARGIN_CLAMP)
         PpuSetWidescreenLayerClamp(ctx->ppu, 1u << 0);
-    if (s_frame_policy == WS_MARGIN_SOURCE) {
+    s_line_hook = (s_frame_policy == WS_MARGIN_SOURCE) ||
+                  (ctx->two_player && ctx->live);
+    if (s_line_hook) {
         g_snes_beam_line_hook = &WsMarginLine;
         g_snes_beam_line_ctx = NULL;
+    }
+    if (s_frame_policy == WS_MARGIN_SOURCE) {
         g_ppu_margin_tile_hook = &WsMarginTile;
         g_ppu_margin_tile_ctx = NULL;
     }
@@ -181,10 +210,14 @@ void WsMarginFrameBegin(const WsFrameCtx *ctx)
 
 void WsMarginFrameEnd(void)
 {
-    if (s_frame_policy == WS_MARGIN_SOURCE) {
+    if (s_line_hook) {
         g_snes_beam_line_hook = NULL;
+        s_line_hook = 0;
+    }
+    if (s_frame_policy == WS_MARGIN_SOURCE) {
         g_ppu_margin_tile_hook = NULL;
-        if (WsRingFrameActive()) WsSourceFrame();
+        for (int vp = 0; vp < WS_VP_MAX; vp++)
+            if (WsRingFrameActive(vp)) WsSourceFrame(vp);
         WsRingFrameEnd();
     } else {
         WsSourceInvalidate();

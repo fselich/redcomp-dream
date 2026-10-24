@@ -50,6 +50,28 @@ Cells served without ever being seen on screen match the offline ROM decode (173
 
 `PpuSetWidescreenLayerClamp(ppu, BG1)`: BG1 is drawn only over the native 256 px, centred, and the margins show the backdrop. No hook is installed. It is always correct and shows less; it is the safe choice if `source` ever misbehaves on a track nobody has checked.
 
+## Two-player split screen
+
+A 2P race has two cameras and two BG1 maps. On Looper the top half uses map
+base `0x0C00` on lines 1..113 and the bottom half `0x1C00` from line 114, set
+by HDMA; the divider is 112..113. The 1P model (one map base latched on line
+1, one scroll unwrap, one seen table, one anchor) cannot serve both. The port
+keeps all of that state per viewport:
+
+- `ws_ring.c`: one `WsRingVp` per half, each with its own map base, scene
+  generation, scroll unwrap, first line and `seen[32][32]`.
+- `ws_source.c`: anchor set, generation and race start per viewport; the
+  track-grid header and the piece-library word index stay shared.
+- `ws_margin.c`: the line and tile hooks choose the viewport by line and skip
+  the divider lines.
+
+The `source`/`clamp` policies themselves are unchanged. The 1P path uses
+viewport 0 for every line and is output-identical. The BG1 probe scorer has a
+`--bottom-line 114` mode that unwraps each half's scroll independently, skips
+the divider and prints a wrong-cell count per viewport. With `source` at
+16:9, Dragster, Zoom Zoo, Bowl, Switcher, Monster and Looper all score zero
+wrong cells in both halves; see [`TWO_PLAYER.md`](TWO_PLAYER.md).
+
 ## Rejected approaches
 
 Approaches tried before `source`, with the reason each was dropped and where the evidence is. Paths are under `openspec/changes/archive/`.

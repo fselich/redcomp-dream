@@ -20,8 +20,19 @@ typedef struct {
     int two_player; /* kRamTwoPlayer != 0 */
 } WsFrameCtx;
 
+/* Split-screen viewports. The line constants are measured on Looper and
+ * rechecked by task 1.3: top [1,112), divider [112,114), bottom [114,224). */
+enum {
+    WS_VP_MAX = 2,
+    WS_VP_TOP_FIRST = 1,
+    WS_VP_DIVIDER_FIRST = 112,
+    WS_VP_BOTTOM_FIRST = 114,
+    WS_VP_END = 224,
+};
+
 int WsWideEnabled(void);
 int WsInLiveRace(void);
+int WsViewportOfLine(int two_player, int line);
 int WsExtra(void);
 void WsFrameCtxBuild(WsFrameCtx *ctx, Ppu *ppu);
 

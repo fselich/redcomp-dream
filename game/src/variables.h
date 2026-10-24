@@ -16,12 +16,14 @@
 
 /* $7E addresses (g_ram index). */
 enum {
-    kRamRider1X     = 0x0411, /* player unicycle screen X */
-    kRamRider2X     = 0x0413, /* CPU rival screen X */
-    kRamRider1Y     = 0x0415, /* player unicycle screen Y */
-    kRamRider2Y     = 0x0417, /* CPU rival screen Y */
-    kRamCamX        = 0x0419, /* race camera X */
-    kRamCamY        = 0x041D, /* race camera Y */
+    kRamRider1X     = 0x0411, /* player unicycle screen X (P1 in 1P and 2P) */
+    kRamRider2X     = 0x0413, /* CPU rival in 1P; player 2 in 2P */
+    kRamRider1Y     = 0x0415, /* player unicycle screen Y (P1 in 1P and 2P) */
+    kRamRider2Y     = 0x0417, /* CPU rival in 1P; player 2 in 2P */
+    kRamCamX        = 0x0419, /* race camera X; P1 camera in 2P */
+    kRamCam2X       = 0x041B, /* P2 camera X in 2P split screen */
+    kRamCamY        = 0x041D, /* race camera Y; P1 camera in 2P */
+    kRamCam2Y       = 0x041F, /* P2 camera Y in 2P split screen */
     kRamCullLeft    = 0x0421, /* rider cull window, left edge */
     kRamCullRight   = 0x0423, /* rider cull window, right edge */
     kRamCullZoomShift = 0x03ED, /* cull comparison shift (Zoom Zoo = 2) */

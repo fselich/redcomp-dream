@@ -1,0 +1,24 @@
+# 2P Crawler/Zoom Zoo route: main menu -> 2P -> PICK A PLAYER -> PICK
+# ANOTHER -> PICK TOUR (Crawler) -> PICK TRACK (one down = Zoom Zoo) ->
+# NOW PLAYING -> race. Waits for the race screen mode, then both pads move.
+wait 640
+press down 2
+wait 60
+press b 2
+wait 400
+press b 2
+wait 500
+press p2:down 2
+wait 60
+press p2:b 2
+wait 400
+press p1:b 2
+wait 400
+press down 2
+wait 100
+press b 2
+wait 400
+press b 2
+wait 400
+until16 0300 == 0001 30000
+press right+p2:right 3000

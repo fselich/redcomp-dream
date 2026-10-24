@@ -29,7 +29,7 @@ Notes:
 - `MaxWidth` outside 342..512 is clamped.
 - **Margin values of removed policies** still load: `ring` and `ghost` mean `source`; `wrap`, `0` and `off` mean `clamp`. Any other value means `source`. A mapped value is left as written unless the margin is changed and saved from the menu. See [`TRACK_MARGIN.md`](TRACK_MARGIN.md).
 - **UnlockAllTours is permanent for that save**: it raises the tour reveal stage in battery SRAM and the game stores it on exit; turning it off later does not hide the tours again. It does nothing in netplay. See [`formats/SAVE_FORMAT.md`](formats/SAVE_FORMAT.md).
-- Widescreen applies only in a live race; see [`WIDESCREEN.md`](WIDESCREEN.md).
+- Widescreen applies only in a live race, in 1P, 2P and VS; the radar remains 1P-only. See [`WIDESCREEN.md`](WIDESCREEN.md) and [`TWO_PLAYER.md`](TWO_PLAYER.md).
 
 ## In-game menu
 
@@ -54,6 +54,9 @@ Environment only, read once per process, not in the menu.
 | `SNESRECOMP_WS_OAM_XHIGH=0` | disables the rider OAM fixes (X high bit, parked pair, sentinel) |
 | `SNESRECOMP_WS_OAM_XHIGH_LOG=<path>` | CSV of X-high fixes (`frame,slot,lo,want`; `lo=-1` is a hidden parked slot) |
 | `SNESRECOMP_WS_RADAR_LOG=<path>` | CSV of radar positions (`frame,ptx,pty,rtx,rty,ax,ay,pword,rword`: player and rival table cells, anchor, words under them) |
+| `SNESRECOMP_WS_2P_LINE_LOG=<path>` | 2P/VS per-line BG1 diagnostic (`frame,line,vp,map_base,bgmode,h,v,main_screen_layers`); viewport `-1` is the divider |
+| `SNESRECOMP_WS_2P_OAM_LOG=<path>` | 2P/VS per-slot rider action log (`frame,slot,half,lo,y,hi,tile,attr,rel,rel_y,E,action`; actions `hide`, `xhigh`, `xhigh-clear`, `hi-positive`, `keep`, `skip`) |
+| `SNESRECOMP_WS_2P_OAM_STAGE_LOG=<path>` | raw 2P OAM/staging trace (slots 96..99, high-table byte 24, `$1501-$1510`, `$1599`, cameras and relative rider positions) |
 | `SNESRECOMP_WS_TEST_OAM=slot:x:y:tile:attr:big[;…]` | trace builds only: overrides OAM slots for the presentation pass |
 | `SNESRECOMP_WS_TEST_OAM_LEFT_HINT=1` | trace builds only: marks the injected slots as left-margin for the renderer |
 

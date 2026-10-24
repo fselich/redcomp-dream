@@ -1,0 +1,32 @@
+# 2P split-screen route: main menu -> 2P -> two player picks -> PICK TRACK
+# (SHUFFLER/LOOPER) -> NOW PLAYING -> live race.
+#
+# The menu sequence is the measured one: the second player screen needs P2
+# input, then P1 confirms. The route waits for the race screen mode ($0300=1)
+# instead of a fixed frame; $0DDB alone is not enough because the game can set
+# it while a selection screen is still being left.
+wait 640
+press down 2
+wait 60
+press b 2
+wait 400
+press b 2
+wait 500
+press p2:down 2
+wait 60
+press p2:b 2
+wait 400
+press p1:down 2
+wait 60
+press p1:b 2
+wait 400
+press p1:b 2
+wait 400
+press p1:b 2
+wait 400
+press p1:b 2
+wait 400
+press p1:b 2
+wait 400
+until16 0300 == 0001 30000
+press right+p2:right 3000

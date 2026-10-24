@@ -31,8 +31,18 @@ All cases drive the game headless (`SDL_VIDEODRIVER=dummy`, `SNESRECOMP_NO_LAUNC
 | `monster` | `tools/scripts/ws-leading-edge/route-monster-move.txt` | 2300 | 16:9 |
 | `zoomzoo512` | `tools/scripts/ws-native-map-spike/route-zoomzoo-move.txt` | 3505 | 32:9 |
 | `logs` | `game/tools/route-validate-dragster.txt` | 2800 | 16:9 `source`, with the source, offwindow, park and radar logs and the BG probe on frames 2600–2800 |
+| `2p-native` | `game/tools/route-validate-2p-looper.txt` | 5000 | widescreen off |
+| `2p-16x9` | same | 5000 | widescreen, 16:9 |
+| `2p-21x9` | same | 5000 | widescreen, 21:9 |
+| `2p-512` | same | 5000 | widescreen, 32:9 (capped at 512 px) |
+| `2p-clamp` | same | 5000 | 16:9, `SNESRECOMP_WS_OFFWINDOW=clamp` |
+| `vs-16x9` | `game/tools/route-validate-vs-looper.txt` | 5000 | widescreen, 16:9 |
+
+The `2p-native` reference was re-recorded when the per-line OAM size fix landed: the bottom half now shows its rider in 4:3 as well. The 1P references were not re-recorded and are unchanged.
 
 Each case records the SHA-256 of the screenshot. The `logs` case also records the hash of each log (with the wall-clock `search_ms` field normalised) and a **wrong-cell score**: `tools/scripts/ws-offwindow/world_key_check.py` checks the BG probe capture against the offwindow log, and the score hashes the counts of conflicting cells and of wrong cells in each margin, which must stay zero.
+
+For 2P, score a BG probe capture with `world_key_check.py --bottom-line 114 --served`. The option splits the rows at the first bottom-half line (114), unwraps each half's scroll independently and skips the two divider lines. It prints `viewport 0`/`viewport 1` conflicting-cell counts and `margin vp0`/`vp1` wrong-cell counts. The measured 16:9 runs on Dragster, Zoom Zoo, Bowl, Switcher, Monster and Looper report zero wrong served cells in both halves; see [`TWO_PLAYER.md`](TWO_PLAYER.md).
 
 ### References and determinism
 

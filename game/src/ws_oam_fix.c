@@ -91,6 +91,7 @@ static void WsParkLog(int slot, int lo, int y, int hi, int rel, int rel_y,
 
 typedef struct {
     int lo, y, hi, bit;
+    int tile, attr;
 } WsOamSlot;
 
 static WsOamSlot WsOamSlotRead(const Ppu *ppu, int slot)
@@ -98,6 +99,8 @@ static WsOamSlot WsOamSlotRead(const Ppu *ppu, int slot)
     WsOamSlot o;
     o.lo = ppu->oam[slot * 2] & 0xFF;
     o.y = ppu->oam[slot * 2] >> 8;
+    o.tile = ppu->oam[slot * 2 + 1] & 0xFF;
+    o.attr = ppu->oam[slot * 2 + 1] >> 8;
     o.bit = (slot & 3) * 2;
     o.hi = (ppu->highOam[slot >> 2] >> o.bit) & 1;
     return o;
@@ -112,6 +115,11 @@ static void WsOamSlotHide(Ppu *ppu, int slot, const WsOamSlot *o)
 static void WsOamSlotSetHigh(Ppu *ppu, int slot, const WsOamSlot *o)
 {
     ppu->highOam[slot >> 2] |= (uint8_t)(1u << o->bit);
+}
+
+static void WsOamSlotClearHigh(Ppu *ppu, int slot, const WsOamSlot *o)
+{
+    ppu->highOam[slot >> 2] &= (uint8_t)~(1u << o->bit);
 }
 
 static void WsParkCandidates(Ppu *ppu, int e, int cam, int cam_y)
@@ -137,13 +145,161 @@ static void WsParkCandidates(Ppu *ppu, int e, int cam, int cam_y)
     }
 }
 
+static void Ws2pOamActionLog(int slot, int half, const WsOamSlot *o,
+                             int rel, int rel_y, int e, const char *action)
+{
+    FILE *f = WsLogOpen("SNESRECOMP_WS_2P_OAM_LOG",
+        "# frame,slot,half,lo,y,hi,tile,attr,rel,rel_y,E,action");
+    if (!f) return;
+    fprintf(f, "%d,%d,%d,%d,%d,%d,0x%02x,0x%02x,%d,%d,%d,%s\n",
+            snes_frame_counter, slot, half, o->lo, o->y, o->hi, o->tile,
+            o->attr, rel, rel_y, e, action);
+    fflush(f);
+}
+
+typedef struct {
+    int slot, half, is_p1, yoff;
+    int sent_lo, sent_y, sent_hi;
+    uint16_t rx, ry, cx, cy;
+} Ws2pRiderSlot;
+
+static const Ws2pRiderSlot k2pRiderSlots[4] = {
+    /* slot, half, P1?, +$70, sentinel, rider X/Y, camera X/Y */
+    { 96, 1, 0, 0x70, 0x30, 0x30, 1, kRamRider2X, kRamRider2Y, kRamCam2X, kRamCam2Y },
+    { 97, 1, 1, 0x70, 0x30, 0x30, 1, kRamRider1X, kRamRider1Y, kRamCam2X, kRamCam2Y },
+    { 98, 0, 1, 0x00, 0x70, 0x70, 0, kRamRider1X, kRamRider1Y, kRamCamX,  kRamCamY  },
+    { 99, 0, 0, 0x00, 0x70, 0x70, 0, kRamRider2X, kRamRider2Y, kRamCamX,  kRamCamY  },
+};
+
+/* The staged tile/attribute patterns measured in task 1.4. Sentinels are
+ * checked before this, so the 0x26/0x28 variants are the parked graphics. */
+static int Ws2pLooksLikeRider(const WsOamSlot *o, int is_p1)
+{
+    if (is_p1)
+        return o->tile == 0x00 && (o->attr == 0x66 || o->attr == 0x26);
+    return o->tile == 0x88 && (o->attr == 0x68 || o->attr == 0x28);
+}
+
+static void WsFixRiderOamXHigh2P(Ppu *ppu)
+{
+    const int e = WsExtra();
+    if (e <= 0) return;
+
+    for (int i = 0; i < 4; i++) {
+        const Ws2pRiderSlot *s = &k2pRiderSlots[i];
+        const WsOamSlot o = WsOamSlotRead(ppu, s->slot);
+        const int rel = (int16_t)(ram_read16(s->rx) - ram_read16(s->cx));
+        const int rel_y = (int16_t)(ram_read16(s->ry) - ram_read16(s->cy));
+
+        /* 1. The half's parking sentinel. Its Y cannot belong to a staged
+         * real rider: the vertical window is [-41,112), so a top entry never
+         * has Y=0x70 and a bottom entry has Y=relY+0x70 >= 0x47, never 0x30. */
+        if (o.lo == s->sent_lo && o.y == s->sent_y && o.hi == s->sent_hi) {
+            WsOamSlotHide(ppu, s->slot, &o);
+            Ws2pOamActionLog(s->slot, s->half, &o, rel, rel_y, e, "hide");
+            continue;
+        }
+
+        if (!Ws2pLooksLikeRider(&o, s->is_p1)) {
+            Ws2pOamActionLog(s->slot, s->half, &o, rel, rel_y, e, "skip");
+            continue;
+        }
+
+        /* 2. The high bit is normally the game's negative-X encoding. If the
+         * WRAM position is positive and clearly prefers the low byte, the
+         * bit was set for a positive rider (measured on real bottom riders in
+         * task 1.4); clear it. */
+        if (o.hi) {
+            const int high_value = (o.lo < e) ? (o.lo + 256) : (o.lo - 256);
+            if (rel > 0 && abs(o.lo - rel) < abs(high_value - rel)) {
+                WsOamSlotClearHigh(ppu, s->slot, &o);
+                Ws2pOamActionLog(s->slot, s->half, &o, rel, rel_y, e,
+                                 "xhigh-clear");
+            } else {
+                Ws2pOamActionLog(s->slot, s->half, &o, rel, rel_y, e,
+                                 rel > 0 ? "hi-positive" : "keep");
+            }
+            continue;
+        }
+
+        /* 3. A low byte at or beyond the margin already decodes natively. */
+        if (o.lo >= e) {
+            Ws2pOamActionLog(s->slot, s->half, &o, rel, rel_y, e, "keep");
+            continue;
+        }
+
+        /* 4. Positive X in [256, 256+E) lost its bit 8 in the low byte. Use
+         * the same one-frame slack as the 1P fix. */
+        if (rel >= 256 - WS_OAM_XHIGH_SLACK &&
+            rel < 256 + e + WS_OAM_XHIGH_SLACK) {
+            const int d_lo = abs(o.lo - rel);
+            const int d_hi = abs((o.lo + 256) - rel);
+            if (d_hi < d_lo) {
+                WsOamSlotSetHigh(ppu, s->slot, &o);
+                Ws2pOamActionLog(s->slot, s->half, &o, rel, rel_y, e, "xhigh");
+                continue;
+            }
+        }
+
+        Ws2pOamActionLog(s->slot, s->half, &o, rel, rel_y, e, "keep");
+    }
+    (void)k2pRiderSlots[0].yoff;
+}
+
+/* Per-line companion to the frame-level 2P fix. The framework's draw does not
+ * replay OAMDATA, and the game's single end-of-frame high table has the
+ * bottom entries small (the top entries are big). The bottom half needs its
+ * own rider entries with the big size bit and the high bit that matches the
+ * true X; write that into the PPU high table before each line. No guest
+ * memory is touched. */
+void WsOamLineFix(Ppu *ppu, int line)
+{
+    if (!ppu || g_ram[kRamTwoPlayer] == 0) return;
+    if (!WsInLiveRace() || !WsCullIsEnabled()) return;
+    if (!WsOamXHighEnabled()) return;
+    int vp = WsViewportOfLine(1, line);
+    if (vp < 0) return;
+    int e = WsExtra();
+
+    int slots[2];
+    if (vp == 0) { slots[0] = 98; slots[1] = 99; }
+    else         { slots[0] = 96; slots[1] = 97; }
+
+    for (int k = 0; k < 2; k++) {
+        const int slot = slots[k];
+        const Ws2pRiderSlot *s = NULL;
+        for (int i = 0; i < 4; i++)
+            if (k2pRiderSlots[i].slot == slot) s = &k2pRiderSlots[i];
+        if (!s) continue;
+        WsOamSlot o = WsOamSlotRead(ppu, slot);
+        if (o.y == 0xE0) continue;
+        if (o.lo == s->sent_lo && o.y == s->sent_y) {
+            /* Native 4:3 has no frame-level sentinel pass; hide it here too. */
+            WsOamSlotHide(ppu, slot, &o);
+            continue;
+        }
+        if (!Ws2pLooksLikeRider(&o, s->is_p1)) continue;
+
+        const int rel = (int16_t)(ram_read16(s->rx) - ram_read16(s->cx));
+        const int hi = (rel < 0 || (rel >= 256 && rel < 256 + e)) ? 1 : 0;
+        if (hi) WsOamSlotSetHigh(ppu, slot, &o);
+        else WsOamSlotClearHigh(ppu, slot, &o);
+        /* The bottom entries are staged small; the rider graphic needs the
+         * big size bit in both halves. */
+        ppu->highOam[slot >> 2] |= (uint8_t)(1u << (o.bit + 1));
+    }
+}
+
 static void WsFixRiderOamXHigh(Ppu *ppu)
 {
     if (!ppu) return;
     if (!WsWideEnabled() || !WsInLiveRace()) return;
-    if (g_ram[kRamTwoPlayer] != 0) return;            /* 2P split screen */
     if (!WsCullIsEnabled() || WsExtra() <= 0) return;
     if (!WsOamXHighEnabled()) return;
+    if (g_ram[kRamTwoPlayer] != 0) {
+        WsFixRiderOamXHigh2P(ppu);
+        return;
+    }
 
     const int e = WsExtra();
     const int cam = (int16_t)ram_read16(kRamCamX);
@@ -201,8 +357,48 @@ static void WsFixRiderOamXHigh(Ppu *ppu)
 }
 
 
+/* 2P OAM/staging diagnostic. The durable per-slot action log is
+ * SNESRECOMP_WS_2P_OAM_LOG; this raw staging trace is kept for measurement. */
+static void Ws2pOamLog(Ppu *ppu)
+{
+    if (!ppu || g_ram[kRamTwoPlayer] == 0) return;
+    FILE *f = WsLogOpen("SNESRECOMP_WS_2P_OAM_STAGE_LOG",
+        "# frame,hi24,oam192,oam193,oam194,oam195,oam196,oam197,oam198,oam199,"
+        "stage1501,stage1599,stage20a2,stage20a3,"
+        "r1x,r1y,r2x,r2y,c1x,c1y,c2x,c2y,"
+        "r1t_x,r1t_y,r2t_x,r2t_y,r2b_x,r2b_y,r1b_x,r1b_y");
+    if (!f) return;
+    char stage[33];
+    for (int i = 0; i < 16; i++)
+        snprintf(stage + i * 2, 3, "%02x", g_ram[0x1501 + i]);
+    stage[32] = 0;
+    int16_t r1x = (int16_t)ram_read16(kRamRider1X);
+    int16_t r1y = (int16_t)ram_read16(kRamRider1Y);
+    int16_t r2x = (int16_t)ram_read16(kRamRider2X);
+    int16_t r2y = (int16_t)ram_read16(kRamRider2Y);
+    int16_t c1x = (int16_t)ram_read16(kRamCamX);
+    int16_t c1y = (int16_t)ram_read16(kRamCamY);
+    int16_t c2x = (int16_t)ram_read16(kRamCam2X);
+    int16_t c2y = (int16_t)ram_read16(kRamCam2Y);
+    fprintf(f, "%d,0x%02x,%04x,%04x,%04x,%04x,%04x,%04x,%04x,%04x,%s,"
+               "0x%02x,0x%02x,0x%02x,"
+               "%d,%d,%d,%d,%d,%d,%d,%d,"
+               "%d,%d,%d,%d,%d,%d,%d,%d\n",
+            snes_frame_counter, ppu->highOam[24],
+            ppu->oam[192], ppu->oam[193], ppu->oam[194], ppu->oam[195],
+            ppu->oam[196], ppu->oam[197], ppu->oam[198], ppu->oam[199],
+            stage, g_ram[0x1599], g_ram[0x20A2], g_ram[0x20A3],
+            r1x, r1y, r2x, r2y, c1x, c1y, c2x, c2y,
+            (int16_t)(r1x - c1x), (int16_t)(r1y - c1y),
+            (int16_t)(r2x - c1x), (int16_t)(r2y - c1y),
+            (int16_t)(r2x - c2x), (int16_t)(r2y - c2y),
+            (int16_t)(r1x - c2x), (int16_t)(r1y - c2y));
+    fflush(f);
+}
+
 void WsOamFix(Ppu *ppu)
 {
+    Ws2pOamLog(ppu);
     WsInjectTestOam(ppu);
     WsFixRiderOamXHigh(ppu);
 }
