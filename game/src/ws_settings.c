@@ -44,7 +44,7 @@ static const char *const kPixelLabels[] = { "CRT 4:3", "8:7", "1:1" };
 
 static const WsSettingDesc kSettings[WS_SET_COUNT] = {
     BOOL_DESC(WS_SET_WIDESCREEN, "PANORAMICO", "Graphics", "Widescreen",
-              "SNESRECOMP_WS", "0", WS_APPLY_LIVE, 1),
+              "SNESRECOMP_WS", "1", WS_APPLY_LIVE, 1),
     ENUM_DESC(WS_SET_ASPECT, "PROPORCION", "Widescreen", "Aspect",
               "SNESRECOMP_WS_ASPECT", NULL, kAspectValues, kAspectLabels, 4,
               "auto", WS_APPLY_LIVE, 0),
@@ -54,7 +54,7 @@ static const WsSettingDesc kSettings[WS_SET_COUNT] = {
     ENUM_DESC(WS_SET_MARGIN, "MARGEN PISTA", "Widescreen", "Margin",
               "SNESRECOMP_WS_OFFWINDOW", "SNESRECOMP_WS_TRACK_CLAMP",
               kMarginValues, kMarginLabels, 2, "source", WS_APPLY_LIVE, 0),
-    BOOL_DESC(WS_SET_HUD, "MARCADOR A LOS LADOS", "Widescreen", "Hud",
+    BOOL_DESC(WS_SET_HUD, "HUD EXPANDIDO", "Widescreen", "Hud",
               "SNESRECOMP_WS_HUD", "1", WS_APPLY_LIVE, 0),
     BOOL_DESC(WS_SET_CULL, "RIVAL EN MARGENES", "Widescreen", "Cull",
               "SNESRECOMP_WS_CULL", "1", WS_APPLY_LIVE, 0),
@@ -160,9 +160,31 @@ static void Store(WsSettingId id, const char *raw, WsSettingSource source)
     s_values[id].source = source;
 }
 
+/* The host's default config text has no [Graphics] Widescreen key, so a
+ * fresh install would otherwise boot in 4:3. Widescreen is this port's
+ * default; an explicit key in config.ini/config.local.ini or SNESRECOMP_WS
+ * (including 0) still wins. */
+static int WidescreenConfigured(void)
+{
+    char buf[16];
+    if (WsConfigReadStr("config.ini", "[Graphics]", "Widescreen", buf,
+                        sizeof(buf)))
+        return 1;
+    if (WsConfigReadStr("config.local.ini", "[Graphics]", "Widescreen", buf,
+                        sizeof(buf)))
+        return 1;
+    {
+        const char *e = WsEnvStr("SNESRECOMP_WS");
+        if (e && *e) return 1;
+    }
+    return 0;
+}
+
 void WsSettingsLoad(void)
 {
     char buf[128];
+
+    if (!WidescreenConfigured()) g_config.widescreen = true;
 
     memset(s_changed, 0, sizeof(s_changed));
     for (int i = 0; i < WS_SET_COUNT; i++) {

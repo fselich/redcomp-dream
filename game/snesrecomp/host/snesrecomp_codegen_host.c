@@ -1850,8 +1850,15 @@ void snesrecomp_codegen_host_apply(RecompLauncherCGameInfo* gi,
     const char* force_env =
         cfg_or(cfg->force_setup_env, "SNESRECOMP_FORCE_SETUP");
     const char* force = getenv(force_env);
-    if (snesrecomp_codegen_host_sources_missing(cfg) ||
-        (force && force[0] && force[0] != '0')) {
+    int must_setup = force && force[0] && force[0] != '0';
+#if !defined(SNESRECOMP_HAS_GENERATED_CODE)
+    /* A build that carries generated code can boot without the source tree.
+     * Only a setup host (or an explicit SNESRECOMP_FORCE_SETUP) should turn
+     * "src/gen is not on disk" into the first-run wizard: a player who moves
+     * the executable away from the project tree still has a playable game. */
+    must_setup = must_setup || snesrecomp_codegen_host_sources_missing(cfg);
+#endif
+    if (must_setup) {
         gi->needs_setup = 1;
         gi->prepare_required_before_continue = 1;
     }

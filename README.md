@@ -14,9 +14,11 @@ The port is playable. On top of the original game it adds:
 
 ## Build
 
-Put your ROM at `rom/Uniracers (USA).sfc` (the folder is git-ignored), then:
+Put your ROM at `rom/Uniracers (USA).sfc` (the folder is git-ignored), check
+out the launcher submodule, then:
 
 ```sh
+git submodule update --init --recursive   # game/recomp-ui
 cd game
 bash tools/regen.sh --rom "../rom/Uniracers (USA).sfc"
 cmake -S . -B build-local -DCMAKE_BUILD_TYPE=Release
@@ -25,13 +27,46 @@ cmake --build build-local --parallel
 
 `regen.sh` checks the ROM against `game/rom_identity.txt` and refuses anything else, then generates `game/src/gen/`. More on the `game/` directory in [`game/README.md`](game/README.md).
 
+The helper wraps the same configure/build steps:
+
+```sh
+game/tools/build.sh                                  # Linux -> game/build-local
+game/tools/build.sh windows --fetch-toolchain         # .exe -> game/build-windows
+game/tools/build.sh both --fetch-toolchain            # both
+```
+
+`--fetch-toolchain` downloads llvm-mingw into `game/.cache/` (ignored by git)
+the first time; the Windows binary is a static `.exe` that needs `assets/`
+beside it. The playable `.exe` does not need the source tree or a compiler; a
+setup-host pack does, because its first-run wizard builds the game.
+
+Create a ready-to-copy Windows folder/zip:
+
+```sh
+game/tools/package-windows.sh --build
+# -> game/dist/uniracers-<version>-windows-x64.zip
+```
+
+It contains the playable `.exe`, `assets/` (the launcher banner/fonts),
+`mods/` when present, a README and the licenses. No ROM, source tree or
+toolchain.
+
 ## Run
 
 From the repository root:
 
 ```sh
-./run.sh
+./run.sh              # straight into the game (development path)
+./run.sh --launcher   # pre-boot launcher: ROM, display, audio, input, saves, mods
 ```
+
+The first time you run the executable without a ROM, the launcher asks for your
+copy, checks it against `rom_identity.txt` and remembers it in `rom.cfg`. The
+launcher is also where display, audio, controller bindings, save management,
+mods and *Generate & rebuild* live. The **F10** menu is still the in-game
+options menu: the launcher owns the generic host settings, F10 owns the port's
+widescreen, margin, HUD, radar and unlock options. If you tick *Skip launcher
+on boot*, `./run.sh --launcher` brings it back.
 
 The executable keeps `config.ini`, `keybinds.ini` and `saves/` in `game/build-local/`. Extra arguments are passed to the game; use absolute paths, because the script starts the game from `game/build-local/`:
 
@@ -45,7 +80,7 @@ Press **F10** or **Select + L** in a race, in the game's menus or on the title s
 
 ```ini
 [Graphics]
-Widescreen = 1       ; off in a fresh config.ini
+Widescreen = 1       ; on for a fresh config.ini; set 0 to turn it off
 
 [Widescreen]
 Aspect = auto        ; auto, 16:9, 21:9, 32:9, or a decimal such as 2.0
@@ -65,6 +100,21 @@ Widescreen appears during a live race in 1P and in 2P/VS split screen; the radar
 
 Every option, its environment override, the precedence rules and the debug variables are in [`docs/CONFIG.md`](docs/CONFIG.md).
 
+### Launcher art
+
+`game/tools/launcher-art.sh` converts an image to the TGA the launcher uses and
+rebuilds:
+
+```sh
+game/tools/launcher-art.sh --boxart cover.png --key-black --trim
+game/tools/launcher-art.sh --brand mark.png --key-black --trim
+game/tools/launcher-art.sh --clear
+```
+
+`--boxart` is the GAME card, `--brand` the small mark next to the title and
+`--pad` the controller image. The generated files live in
+`game/launcher_assets/`; commit them if the release should carry them.
+
 ## Checking a change
 
 ```sh
@@ -79,6 +129,7 @@ runs a set of headless races on a copy of the executable (your saves are never t
 |---|---|
 | `game/` | the recomp project: hand-written `src/`, analyzer input `recomp/`, CMake, `tools/` |
 | `game/snesrecomp/` | the framework, vendored with the local patch `game/patches-snesrecomp-local.diff` applied |
+| `game/recomp-ui/` | the shared pre-boot launcher (a submodule) |
 | `docs/` | documentation, starting at [`docs/README.md`](docs/README.md) |
 | `openspec/` | requirements (`specs/`) and the history of every change (`changes/archive/`) |
 | `tools/` | development scripts, input routes and research patches ([`tools/README.md`](tools/README.md)) |

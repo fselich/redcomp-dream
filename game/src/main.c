@@ -97,6 +97,10 @@ static void PrepareFrame(int drawable_w, int drawable_h,
 static const SnesDesktopHostGame kGameHost = {
     .display_name        = "Uniracers",
     .window_title        = "Uniracers",
+    /* ASCII on purpose. The framework default is "<name> — Launcher"; SDL3's
+     * X11 backend currently leaves _NET_WM_NAME unset and puts the UTF-8
+     * bytes in WM_NAME, which some window managers render as mojibake. */
+    .launcher_title      = "Uniracers - Launcher",
     .region              = SNESRECOMP_ROM_REGION,
     .rom_file            = SNESRECOMP_ROM_FILE,
     .expected_sha256_hex = SNESRECOMP_ROM_EXPECTED_SHA256,
@@ -105,8 +109,20 @@ static const SnesDesktopHostGame kGameHost = {
     .build_version       = SNES_GAME_VERSION,
     .game_info           = &kGameInfo,
     .num_players         = 2,
+    /* The launcher's generic refusal names the SHA-256 it knows; add the CRC32
+     * from the same identity file so a player with a CRC tool has both. */
+    .rom_help            = "Expected CRC32 "
+                           SNESRECOMP_ROM_EXPECTED_CRC32 ". "
+                           "Headered (.smc) and headerless (.sfc) copies of "
+                           "the right dump both work.",
     .native_widescreen   = 1,
-    .widescreen_supported = 1,
+    /* The port's widescreen model (Aspect/MaxWidth/Margin, F10) is not the
+     * launcher's generic 16:9 toggle; keep that row out of recomp-ui. */
+    .widescreen_supported = 0,
+    /* The port already supports the three SNES pixel aspects through
+     * g_config.display_aspect and PrepareFrame, so the launcher may own the
+     * same row the F10 menu exposes. */
+    .display_aspect_supported = 1,
     .prepare_frame       = &PrepareFrame,
     .after_config        = &GameAfterConfig,
     .after_run_frame     = &GameAfterRunFrame,

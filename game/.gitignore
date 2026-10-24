@@ -7,9 +7,10 @@
 *.smc
 *.srm
 
-# Build trees and packaged output
+# Build trees, toolchain downloads and packaged output
 /build/
 /build-*/
+/.cache/
 /dist/
 /saves/
 

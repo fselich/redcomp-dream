@@ -1,0 +1,3 @@
+[submodule "game/recomp-ui"]
+	path = game/recomp-ui
+	url = https://github.com/RetroPortingToolKit/recomp-ui.git

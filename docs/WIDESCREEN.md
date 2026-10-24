@@ -2,7 +2,11 @@
 
 The game draws a 256×224 picture. With widescreen on, a live race is drawn wider, from 342 px (16:9) up to 512 px, with real content in the extra columns. Menus, the title screen and NOW PLAYING stay at 256 px. Every widescreen feature is presentation-only except the cull window (below), which is the one module that writes guest WRAM.
 
-Options are listed in [`CONFIG.md`](CONFIG.md); the module layout is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Widescreen is on by default for a fresh configuration: the host's default
+`config.ini` has no `[Graphics] Widescreen` key, and the port treats that as
+`1`. An explicit `[Graphics] Widescreen = 0` or `SNESRECOMP_WS=0` turns it off.
+Options are listed in [`CONFIG.md`](CONFIG.md); the module layout is in
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## When it applies
 
@@ -23,9 +27,9 @@ The extra width per side is `E = (width - 256) / 2` (`WsExtra()`): 43 at 16:9, 9
 
 The track layer is filled from the game's own track table, or clamped to 256 px. See [`TRACK_MARGIN.md`](TRACK_MARGIN.md).
 
-## HUD (BG3)
+## Expanded HUD (BG3)
 
-`game/src/ws_hud.c`, option `[Widescreen] Hud`:
+`game/src/ws_hud.c`, option `[Widescreen] Hud` (F10 row `HUD EXPANDIDO`):
 
 - lines 17–31 (RACE label, lap counter, timer) use an elastic band: the left group moves out by `E` and keeps a 4 px inset, the timer group moves right by `E`, both at 1:1 scale;
 - lines 32–223 (prompts, arrows, lap times) keep the native clamp, so they stay where the game put them. Line 31 is the last row of the lap/timer glyphs, which is why the band ends at 32.

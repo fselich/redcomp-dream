@@ -11,6 +11,7 @@
 # Build trees, generated C and local runtime state.
 /game/build/
 /game/build-*/
+/game/.cache/
 /game/saves/
 /game/src/gen/
 /game/recomp/funcs.h

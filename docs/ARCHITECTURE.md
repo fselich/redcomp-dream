@@ -1,6 +1,6 @@
 # Architecture
 
-The port is a static recompilation of the Uniracers ROM on top of the [snesrecomp](https://github.com/RetroPortingToolKit/snesrecomp) framework. The game logic runs as generated C (`game/src/gen/`, produced locally from your ROM by `game/tools/regen.sh` and never committed), with the framework's interpreter covering whatever the analyzer could not prove. The framework also provides the PPU, APU, desktop host, launcher, save states, rewind and netplay. The hand-written part, `game/src/`, is the glue plus the widescreen and quality-of-life features.
+The port is a static recompilation of the Uniracers ROM on top of the [snesrecomp](https://github.com/RetroPortingToolKit/snesrecomp) framework. The game logic runs as generated C (`game/src/gen/`, produced locally from your ROM by `game/tools/regen.sh` and never committed), with the framework's interpreter covering whatever the analyzer could not prove. The framework provides the PPU, APU, desktop host, save states, rewind and netplay; the shared [recomp-ui](https://github.com/RetroPortingToolKit/recomp-ui) submodule provides the pre-boot launcher. The hand-written part, `game/src/`, is the glue plus the widescreen and quality-of-life features.
 
 ## Layout
 
@@ -11,9 +11,32 @@ The port is a static recompilation of the Uniracers ROM on top of the [snesrecom
 | `game/recomp/` | analyzer input: per-bank `bank*.cfg` and `symbols.toml` (see `game/recomp/README.md`) |
 | `game/tools/` | `regen.sh` (generate C from a verified ROM), `validate.sh` and its references |
 | `game/snesrecomp/` | the framework, vendored, with the local patch applied |
-| `game/patches-snesrecomp-local.diff` | that patch against the pin in `game/framework_pins.txt` |
+| `game/recomp-ui/` | the shared pre-boot launcher (Dear ImGui), a submodule |
+| `game/patches-snesrecomp-local.diff` | that patch against the snesrecomp pin in `game/framework_pins.txt` |
 | `game/rom_identity.txt` | the accepted ROM digests |
 | `tools/` | development scripts, routes and research patches ([`tools/README.md`](../tools/README.md)) |
+
+## Boot and in-game UI
+
+There are two surfaces, and they do not overlap:
+
+- **Pre-boot launcher.** `game/recomp-ui/` is built into the executable with
+  the `snes` profile and runs before `SnesInit()`. It owns ROM selection and
+  verification, the generic host settings (`[Graphics]`, `[Sound]`,
+  `[KeyMap]`, `[GamepadMap]`), the SAVES panel, the Mods page and *Generate &
+  rebuild*. It is pinned in `game/framework_pins.txt`. `--no-launcher`,
+  `SNESRECOMP_NO_LAUNCHER`, headless/scripted runs and `SkipLauncher=1` skip
+  it; `--launcher` forces it.
+- **In-game menu.** F10 / Select+L opens the port's `SnesTitleMenu`
+  (`ws_menu.[ch]`) over a frozen guest. It owns the port's options:
+  `[Widescreen]`, `[Video] MiniMap` and `[Emulation] UnlockAllTours`. The
+  project does not enable the framework's in-game launcher, so there is no
+  second in-game overlay.
+
+The launcher's generic Widescreen row is hidden: the port's widescreen model
+has different semantics and stays in F10. Both surfaces read the same
+`[Graphics] Fullscreen`, `[Graphics] DisplayAspect` and `[Sound] Volume`
+fields, and F10 refreshes them from the host when it opens.
 
 ## Modules (`game/src/`)
 

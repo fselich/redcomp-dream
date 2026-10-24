@@ -10,11 +10,11 @@ The port's options live in `config.ini` beside the executable (`game/build-local
 
 | Option | Key | Values | Default | Environment |
 |---|---|---|---|---|
-| Widescreen | `[Graphics] Widescreen` | `0`, `1` | `0` | `SNESRECOMP_WS` |
+| Widescreen | `[Graphics] Widescreen` | `0`, `1` | `1` (a fresh install; an explicit `0` stays off) | `SNESRECOMP_WS` |
 | Aspect | `[Widescreen] Aspect` | `auto`, `16:9`, `21:9`, `32:9`, or a decimal such as `2.0` | `auto` | `SNESRECOMP_WS_ASPECT` |
 | Maximum width | `[Widescreen] MaxWidth` | 342..512 (menu presets 384, 448, 512) | `512` | — |
 | Track margin | `[Widescreen] Margin` | `source`, `clamp` | `source` | `SNESRECOMP_WS_OFFWINDOW`; legacy `SNESRECOMP_WS_TRACK_CLAMP` (any value) means `clamp` |
-| Wide HUD | `[Widescreen] Hud` | `0`, `1` | `1` | `SNESRECOMP_WS_HUD` |
+| Expanded HUD | `[Widescreen] Hud` | `0`, `1` | `1` | `SNESRECOMP_WS_HUD` |
 | Cull window | `[Widescreen] Cull` | `0`, `1` | `1` | `SNESRECOMP_WS_CULL` |
 | Fullscreen | `[Graphics] Fullscreen` | windowed, borderless, exclusive | host default | — |
 | Pixel aspect | `[Graphics] DisplayAspect` | CRT 4:3, 8:7, 1:1 | host default | — |
@@ -31,9 +31,31 @@ Notes:
 - **UnlockAllTours is permanent for that save**: it raises the tour reveal stage in battery SRAM and the game stores it on exit; turning it off later does not hide the tours again. It does nothing in netplay. See [`formats/SAVE_FORMAT.md`](formats/SAVE_FORMAT.md).
 - Widescreen applies only in a live race, in 1P, 2P and VS; the radar remains 1P-only. See [`WIDESCREEN.md`](WIDESCREEN.md) and [`TWO_PLAYER.md`](TWO_PLAYER.md).
 
+## Pre-boot launcher
+
+The executable opens the shared recomp-ui launcher before the guest starts. It
+is the place for the generic host settings and the first-run setup:
+
+| Surface | Owns |
+|---|---|
+| Launcher | `[Graphics]` window scale, fullscreen, display aspect, linear filtering, frame blend, vsync, renderer, run-ahead; `[Sound]` volume and rate; `[KeyMap]`; `[GamepadMap]`; `saves/save.srm`; Mods; *Generate & rebuild* |
+| F10 menu | `[Widescreen]` (widescreen, aspect, maximum width, margin, wide HUD, cull window); `[Video] MiniMap`; `[Emulation] UnlockAllTours` |
+| Both | `[Graphics] Fullscreen`, `[Graphics] DisplayAspect`, `[Sound] Volume`; F10 reads the current host values when it opens |
+
+The launcher's generic **Widescreen** row is hidden on purpose: the port's
+widescreen model has its own `Aspect`, `MaxWidth` and `Margin` options and
+lives in F10. The pixel-aspect row is the same `[Graphics] DisplayAspect` key
+F10 shows.
+
+Use `./run.sh --launcher` to open it. `--no-launcher` (and `run.sh`'s default),
+`SNESRECOMP_NO_LAUNCHER=1`, headless/scripted runs and `SkipLauncher=1` skip it;
+`--launcher` forces it even after `SkipLauncher=1`. The launcher's
+*Generate & rebuild* writes the generated C into `src/gen/` and builds a
+playable binary; a release setup pack uses the same flow.
+
 ## In-game menu
 
-**F10** or **Select + L** opens the menu in a race, in the game's menus or on the title screen; the game freezes while it is open. It is not available in netplay.
+**F10** or **Select + L** opens the menu in a race, in the game's menus or on the title screen; the game freezes while it is open. It is not available in netplay. This is the only in-game menu: the pre-boot launcher above is not opened from a running game.
 
 - Up/down (arrows or d-pad) move between rows; left/right (or `<`/`>`) change the value and apply it at once. Held directions repeat.
 - A/Enter activates *GUARDAR EN CONFIG.INI* (save) or *CERRAR* (close). B, Escape or F10 close.

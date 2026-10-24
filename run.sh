@@ -6,6 +6,7 @@
 # args are passed through, e.g.:
 #   ./run.sh --script "$PWD/tools/scripts/ws-native-map-spike/route-dragster-move.txt"
 #   SNESRECOMP_WS_MINIMAP=0 ./run.sh
+#   ./run.sh --launcher          # open the pre-boot GUI on rom/
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,5 +29,15 @@ if [[ ! -x "$BIN" ]]; then
     exit 1
 fi
 
+# The developer path boots straight to the game. --launcher opens the GUI on
+# the repository ROM instead; the script must not pass --no-launcher then,
+# because the host treats --launcher + --no-launcher as a usage error.
+LAUNCH_FLAGS=(--no-launcher)
+for arg in "$@"; do
+    if [[ "$arg" == "--launcher" ]]; then
+        LAUNCH_FLAGS=()
+    fi
+done
+
 cd -- "$BUILD"
-exec "$BIN" --rom "$ROM" --no-launcher "$@"
+exec "$BIN" --rom "$ROM" "${LAUNCH_FLAGS[@]}" "$@"
