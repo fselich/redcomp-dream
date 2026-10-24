@@ -76,6 +76,7 @@ CASES=(
   "vs-16x9|game/tools/route-validate-vs-looper.txt|5000|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9"
   "hopper-menu|game/tools/route-validate-hopper.txt|1960|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9 SNESRECOMP_UNLOCK_TOURS=1"
   "hopper-16x9|game/tools/route-validate-hopper.txt|3200|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=16:9 SNESRECOMP_UNLOCK_TOURS=1"
+  "hopper-jump|game/tools/route-validate-hopper-jump.txt|3000|SNESRECOMP_WS=1 SNESRECOMP_WS_ASPECT=21:9 SNESRECOMP_UNLOCK_TOURS=1"
 )
 
 want_case() {
@@ -163,7 +164,7 @@ run_one() {
 
   local frame_ppm="$dir/frame.ppm"
   local -a extra=()
-  if [ "$tag" = "logs" ]; then
+  if [ "$tag" = "logs" ] || [ "$tag" = "hopper-jump" ]; then
     extra+=(
       "SNESRECOMP_WS_SOURCE_LOG=$dir/source.log"
       "SNESRECOMP_WS_OFFWINDOW_LOG=$dir/offwindow.log"

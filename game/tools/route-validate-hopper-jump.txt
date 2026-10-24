@@ -1,0 +1,27 @@
+# Hopper route: 1P -> PICK YOUR UNI -> PICK TOUR (three downs = Hopper) ->
+# PICK TRACK (WARIO PAINT) -> NOW PLAYING -> race. Run with
+# SNESRECOMP_UNLOCK_TOURS=1 on the empty validation save so Hopper is visible.
+# Hold right, then hold B at about one second: the rider stays airborne for
+# ~4.5 s, the BG1 self-check disagrees and the source anchor must be held so
+# the 21:9 right margin keeps the track (the no-hold cut ends at the 4:3 edge).
+wait 640
+press b 2
+wait 300
+press b 2
+wait 300
+press down 2
+wait 100
+press down 2
+wait 100
+press down 2
+wait 100
+press b 2
+wait 400
+press b 2
+wait 400
+press b 2
+wait 400
+until16 0300 == 0001 30000
+press right 70
+press right+b 30
+press right 2000

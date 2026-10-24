@@ -56,6 +56,10 @@ The source anchor can also be seeded from the track header in `$7F:0002–0009` 
 
 On Hopper the seed reaches `ax=72 ay=-14` at frame 2586, the race scene reset drops it, and it re-seeds at frame 2598; the race screenshot is at frame 2764, so both margins and the radar are filled when the race starts. The old general search only found the anchor at frame 3552. The first ~107 frames have no usable track word in the seen table (race-start overlay) and remain masked, never wrong. The 16:9 BG1 probe at frames 2790–2810 reports zero wrong and zero conflicting cells in both margins. Jumper resolves with the general search at frame 2741 (`ax=119 ay=-5`), so the seed is not needed there but is available per track. The remaining later tours still need their own probe (roadmap R1).
 
+### Airborne self-check hold
+
+The continuous self-check normally drops an anchor on the first frame whose verified cells agree below 95 %, and keeps a 30-frame grace for short transients. A jump or stunt breaks that rule: while the rider is airborne (`$7E:0BE9 != 0`) the vertical camera moves, the BG1 rows change and the verified cells stop matching the table even though the anchor still names the same origin. On Hopper a held B at about one second keeps the rider airborne for ~273 frames (2841..3113), far beyond the grace, and the first-failure drop masked the 21:9 right margin from the 4:3 edge out for the whole stunt. While `$7E:0BE9` is set the anchor is now kept and the table keeps serving the margins; once the rider is back on the track the ordinary 30-frame grace/drop runs again. The no-jump track gap still produces a short ~19-frame disagreement at ~3095, which the grace already covered. The gap itself is not filled: the table has no track there, and the frame at 3100 shows only the real track piece.
+
 ## Two-player split screen
 
 A 2P race has two cameras and two BG1 maps. On Looper the top half uses map

@@ -26,6 +26,9 @@ enum {
     kRamCam2Y       = 0x041F, /* P2 camera Y in 2P split screen */
     kRamCullLeft    = 0x0421, /* rider cull window, left edge */
     kRamCullRight   = 0x0423, /* rider cull window, right edge */
+    kRamAirborne    = 0x0BE9, /* nonzero while the rider is airborne/stunting:
+                               * the BG1 rows move with the jump, so the source
+                               * self-check holds its anchor while this is set */
     kRamCullZoomShift = 0x03ED, /* cull comparison shift (Zoom Zoo = 2) */
     kRamRaceMode    = 0x00B4, /* nonzero in race/pause; 0x0B on later tours */
     kRamPauseFinish = 0x0EE9, /* nonzero in pause and after the finish */

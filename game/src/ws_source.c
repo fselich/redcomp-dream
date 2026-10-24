@@ -50,6 +50,7 @@
 #define WS_SRC_MAX_PIECES 2048
 #define WS_SRC_MAX_ANCHORS 8
 #define WS_SRC_SEED_WAIT 10
+#define WS_SRC_SELF_GRACE 30
 
 typedef struct {
     int32_t wx, wy;
@@ -64,6 +65,7 @@ typedef struct {
     int seed_fail;                              /* failed searches since samples */
     int seed_world_valid;                       /* start world X was captured */
     int32_t seed_world_x;                        /* rider world X at the start */
+    int self_fail[WS_SRC_MAX_ANCHORS];           /* consecutive failed self-checks */
 } WsSrcVp;
 
 static WsSrcVp s_src_vp[WS_VP_MAX];
@@ -222,6 +224,7 @@ static int WsSrcTrySeed(int vp, const WsSrcSample *smp, int n)
     v->valid = 1;
     v->ax[0] = ax;
     v->ay[0] = cand[best].ay;
+    v->self_fail[0] = 0;
     v->seed_fail = 0;
     WsSrcLog(vp, "%d anchor ok seed ax=%d ay=%d anchors=1 grid=%dx%d "
              "samples=%d header=%d,%d\n", snes_frame_counter, ax, v->ay[0],
@@ -315,6 +318,7 @@ static void WsSrcSearch(int vp)
                 v->ay[i] = sur_ay[i];
             }
             v->valid = survivors;
+            for (int i = 0; i < survivors; i++) v->self_fail[i] = 0;
             v->seed_fail = 0;
             WsSrcLog(vp, "%d anchor ok ax=%d ay=%d anchors=%d grid=%dx%d samples=%d "
                      "seed=%04x candidates=%d latency=%d search_ms=%.3f\n",
@@ -345,6 +349,7 @@ static void WsSrcFrame(int vp)
             WsSrcLog(vp, "%d anchor dropped: scene reset\n", snes_frame_counter);
         v->valid = 0;
         v->seed_fail = 0;
+        memset(v->self_fail, 0, sizeof(v->self_fail));
         v->race_frame0 = snes_frame_counter;
         v->seed_world_valid = 0;
         if (WsRingScrollValidVp(vp)) {
@@ -369,18 +374,39 @@ static void WsSrcFrame(int vp)
     int n = WsSrcSamples(vp, smp, WS_SRC_CHECK_SAMPLES, 0);
     if (n == 0) return;
     int kept = 0, before = v->valid;
+    /* While the rider is airborne the jump moves the BG1 rows, so the
+     * verified cells stop matching the table even though the anchor still
+     * names the table origin. Keep the anchor for the whole jump instead of
+     * dropping it (the drop would mask the margins for seconds) and resume
+     * the ordinary grace once the rider is back on the track. */
+    int airborne = g_ram[kRamAirborne] != 0;
     for (int i = 0; i < v->valid; i++) {
         int ok = WsSrcAgreement(smp, n, v->ax[i], v->ay[i], n);
         if (ok * 20 < n * 19) {
-            WsSrcLog(vp, "%d anchor (%d,%d) dropped: self-check %d/%d\n",
-                     snes_frame_counter, v->ax[i], v->ay[i], ok, n);
-            continue;
+            if (airborne) {
+                v->self_fail[i] = 0;
+                WsSrcLog(vp, "%d self-check (%d,%d) %d/%d hold air\n",
+                         snes_frame_counter, v->ax[i], v->ay[i], ok, n);
+            } else if (v->self_fail[i] < WS_SRC_SELF_GRACE) {
+                v->self_fail[i]++;
+                WsSrcLog(vp, "%d self-check (%d,%d) %d/%d hold %d/%d\n",
+                         snes_frame_counter, v->ax[i], v->ay[i], ok, n,
+                         v->self_fail[i], WS_SRC_SELF_GRACE);
+            } else {
+                WsSrcLog(vp, "%d anchor (%d,%d) dropped: self-check %d/%d "
+                         "after %d holds\n", snes_frame_counter, v->ax[i],
+                         v->ay[i], ok, n, WS_SRC_SELF_GRACE);
+                continue;
+            }
+        } else {
+            if (ok != n)
+                WsSrcLog(vp, "%d self-check (%d,%d) %d/%d\n",
+                         snes_frame_counter, v->ax[i], v->ay[i], ok, n);
+            v->self_fail[i] = 0;
         }
-        if (ok != n)
-            WsSrcLog(vp, "%d self-check (%d,%d) %d/%d\n", snes_frame_counter,
-                     v->ax[i], v->ay[i], ok, n);
         v->ax[kept] = v->ax[i];
         v->ay[kept] = v->ay[i];
+        v->self_fail[kept] = v->self_fail[i];
         kept++;
     }
     v->valid = kept;
@@ -400,6 +426,7 @@ static void WsSrcInvalidate(void)
         if (v->valid)
             WsSrcLog(vp, "%d anchor dropped: race not live\n", snes_frame_counter);
         v->valid = 0;
+        memset(v->self_fail, 0, sizeof(v->self_fail));
     }
 }
 
