@@ -51,6 +51,27 @@ static void Stroke(int x, int y, int w, int h, uint32_t color)
     snes_ovl_stroke_rect(s_panel, WS_MENU_PANEL_W, WS_MENU_PANEL_H, x, y, w, h, color);
 }
 
+/* Option rows use 12 px glyphs: the host's 8x8 font scales only by whole
+ * steps, so each glyph is drawn at 1x into a cell and resampled 1.5x with
+ * nearest neighbour. */
+static void TextRow(int x, int y, const char *s, uint32_t color)
+{
+    uint32_t cell[8 * 8];
+    for (; *s; s++, x += 12) {
+        memset(cell, 0, sizeof(cell));
+        snes_ovl_draw_char(cell, 8, 8, 0, 0, *s, 1u, 1);
+        for (int dy = 0; dy < 12; dy++) {
+            for (int dx = 0; dx < 12; dx++) {
+                const int px = x + dx, py = y + dy;
+                if (!cell[(dy * 2 / 3) * 8 + dx * 2 / 3]) continue;
+                if (px >= 0 && px < WS_MENU_PANEL_W && py >= 0 &&
+                    py < WS_MENU_PANEL_H)
+                    s_panel[py * WS_MENU_PANEL_W + px] = color;
+            }
+        }
+    }
+}
+
 static void Text(int x, int y, const char *s, uint32_t color, int scale)
 {
     snes_ovl_draw_text(s_panel, WS_MENU_PANEL_W, WS_MENU_PANEL_H, x, y, s, color, scale);
@@ -63,8 +84,8 @@ static const char *RowHelp(WsSettingId id)
     case WS_SET_ASPECT: return "PROPORCION DEL CAMPO: AUTO SIGUE LA VENTANA";
     case WS_SET_MAX_WIDTH: return "ANCHO MAXIMO DEL CAMPO EN PIXELES";
     case WS_SET_MARGIN: return "COMO SE RELLENAN LOS MARGENES DE PISTA";
-    case WS_SET_HUD: return "MARCADOR Y TIEMPO EN LOS MARGENES";
-    case WS_SET_CULL: return "AMPLIA LA VENTANA DE DESCARTE DE PILOTOS";
+    case WS_SET_HUD: return "VUELTAS Y TIEMPO EN LAS ESQUINAS DEL CUADRO";
+    case WS_SET_CULL: return "LOS PILOTOS SIGUEN VISIBLES EN LOS MARGENES";
     case WS_SET_FULLSCREEN: return "MODO DE VENTANA; SE APLICA AL INSTANTE";
     case WS_SET_PIXEL_ASPECT: return "FORMA DE LOS PIXELES SNES, NO DEL CAMPO";
     case WS_SET_VOLUME: return "VOLUMEN DEL AUDIO, EN PORCENTAJE";
@@ -103,13 +124,13 @@ static void DrawPanel(void)
             const int locked = WsSettingLocked(id);
             char value[96];
 
-            Text(14, y + 6, selected ? ">" : " ", accent, 2);
-            Text(WS_MENU_LABEL_X, y + 6, d->label, selected ? accent : fg, 2);
+            TextRow(20, y + 8, selected ? ">" : " ", accent);
+            TextRow(WS_MENU_LABEL_X, y + 8, d->label, selected ? accent : fg);
             if (locked)
                 snprintf(value, sizeof(value), "%s", WsSettingDisplayValue(id));
             else
                 snprintf(value, sizeof(value), "<%s>", WsSettingDisplayValue(id));
-            Text(WS_MENU_VALUE_X, y + 6, value, selected ? accent : fg, 2);
+            TextRow(WS_MENU_VALUE_X, y + 8, value, selected ? accent : fg);
             if (locked) {
                 char mark[16];
                 snprintf(mark, sizeof(mark), "[%s]",
@@ -117,11 +138,11 @@ static void DrawPanel(void)
                 Text(464, y + 10, mark, 0xFFFF6B6Bu, 1);
             }
         } else if (row == WS_MENU_SAVE) {
-            Text(WS_MENU_LABEL_X, y + 6, "GUARDAR EN CONFIG.INI",
-                 selected ? accent : fg, 2);
+            TextRow(WS_MENU_LABEL_X, y + 8, "GUARDAR EN CONFIG.INI",
+                    selected ? accent : fg);
         } else {
-            Text(WS_MENU_LABEL_X, y + 6, "CERRAR",
-                 selected ? accent : fg, 2);
+            TextRow(WS_MENU_LABEL_X, y + 8, "CERRAR",
+                    selected ? accent : fg);
         }
     }
 

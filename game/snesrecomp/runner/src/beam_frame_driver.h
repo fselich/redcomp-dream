@@ -1,9 +1,6 @@
 #ifndef SNESRECOMP_BEAM_FRAME_DRIVER_H
 #define SNESRECOMP_BEAM_FRAME_DRIVER_H
 
-#include <stdbool.h>
-#include <stdint.h>
-
 /* Beam-aligned frame driver for whole-program LLE ports.
  *
  * One host frame is one PPU field, cut where hardware raises NMI: the beam's
@@ -40,11 +37,5 @@ extern SnesBeamLineHook *g_snes_beam_line_hook;
 extern void *g_snes_beam_line_ctx;
 /* Forget the booted machine: the next frame starts from the reset vector. */
 void snes_beam_frame_driver_reset(void);
-
-/* The driver's execution position is host state outside the rollback
- * snapshot. A speculative lane that runs guest frames must carry it with the
- * blob it saves. */
-void snes_beam_frame_driver_get_exec(uint32_t *pc, bool *wai);
-void snes_beam_frame_driver_set_exec(uint32_t pc, bool wai);
 
 #endif /* SNESRECOMP_BEAM_FRAME_DRIVER_H */

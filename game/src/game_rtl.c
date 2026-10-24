@@ -12,17 +12,17 @@
  *   ws_cull.[ch]        rider cull widening (the only guest WRAM writer)
  *   ws_hud.[ch]         BG3 elastic band and clamp bands
  *   ws_oam_fix.[ch]     rider X-high/parked OAM fixes (PPU OAM copy only)
- *   ws_ring.[ch]        BG1 ring observation, margin policy and tile hook
+ *   ws_margin.[ch]      BG1 margin policy (source/clamp) and its hooks
+ *   ws_ring.[ch]        BG1 ring observation (seen table, scroll unwrap)
  *   ws_source.[ch]      $7F track-table reader and source anchor
  *   ws_radar.[ch]       64x32 local radar panel
- *   ws_ghost_lane.[ch]  speculative BG1 lane for the `ghost` policy
  *   ws_debug.[ch]       lazy CSV/text log files
  *   uniracers_save.[ch] SRAM checksums and the opt-in UnlockAllTours
  *
  * Guest-state rule: ws_cull.c is the only production writer of WRAM, and
  * uniracers_save.c the only writer of SRAM (one byte, opt-in). Every other
- * module is presentation-only. See docs/UNIRACERS_NATIVE_MAP_HANDOFF.md
- * and openspec/changes/uniracers-code-cleanup.
+ * module is presentation-only. See
+ * openspec/changes/archive/2026-10-23-uniracers-code-cleanup.
  */
 
 #include "game_rtl.h"
@@ -32,15 +32,13 @@
 #include "uniracers_save.h"
 #include "ws_cull.h"
 #include "ws_frame.h"
-#include "ws_ghost_lane.h"
 #include "ws_hud.h"
+#include "ws_margin.h"
 #include "ws_oam_fix.h"
 #include "ws_radar.h"
-#include "ws_ring.h"
 #include "ws_settings.h"
 
 extern Ppu *g_ppu;
-extern int snes_netplay_active(void);
 
 void GameRunOneFrame(void)
 {
@@ -58,37 +56,16 @@ void GameDrawPpuFrame(void)
         WsOamFix(ctx.ppu);
         WsRadarUpdate(ctx.ppu, &ctx);
     }
-    int ow_policy = ctx.active ? WsOffwindowMode() : WS_OW_WRAP;
-    int ow_mode = WsOffwindowHooked(ow_policy) ? ow_policy : 0;
-    if (!ow_mode) WsOwReset();
-    if (WsOffwindowHooked(WsOffwindowMode()) && ctx.wide && WsOwVerbose())
-        WsRingLogLive(ctx.live);
-    if (ctx.active && ow_policy == WS_OW_CLAMP) {
-        /* SNESRECOMP_WS_OFFWINDOW=clamp (or the legacy TRACK_CLAMP): BG1
-         * limited to the native 256 px, margins show the background. */
-        PpuSetWidescreenLayerClamp(ctx.ppu, 1u << 0);
-    }
+    WsMarginFrameBegin(&ctx);
     WsApplyHud(ctx.ppu, &ctx);
-    if (ow_mode) {
-        g_snes_beam_line_hook = &WsOffwindowLine;
-        g_snes_beam_line_ctx = NULL;
-        g_ppu_margin_tile_hook = &WsOffwindowTile;
-        g_ppu_margin_tile_ctx = NULL;
-    }
     snes_beam_frame_driver_draw_ppu_frame();
-    if (ow_mode) {
-        g_snes_beam_line_hook = NULL;
-        g_ppu_margin_tile_hook = NULL;
-    }
-    WsRingFrameEnd(ow_mode);
+    WsMarginFrameEnd();
 }
 
 void GameAfterRunFrame(const struct SnesDesktopHostFrameStats *stats)
 {
-    /* Before the ghost lane, so its snapshot of the real machine already
-     * carries the unlocked stage. */
+    (void)stats;
     SaveUnlockTick();
-    WsGhostAfterRunFrame(stats);
 }
 
 void GameAfterConfig(void)

@@ -2,7 +2,7 @@
  *
  * Draws a 64x32 RGB15 panel in the bottom-right margin from the $7F track
  * table and the live rider/camera positions. Presentation-only: no guest
- * writes. See openspec/changes/uniracers-ws-radar.
+ * writes. See openspec/changes/archive/2026-10-22-uniracers-ws-radar.
  */
 #include "ws_radar.h"
 
@@ -19,7 +19,7 @@
 
 extern int snes_netplay_active(void);
 
-/* ── Local radar (openspec/changes/uniracers-ws-radar) ────────────────────
+/* ── Local radar ─────────────────────────────────────────────────────────────
  *
  * A 64x32 RGB15 panel in the bottom-right margin. Each panel pixel covers a
  * 2x2 block of the 128x64-cell window around the player, read from the decoded

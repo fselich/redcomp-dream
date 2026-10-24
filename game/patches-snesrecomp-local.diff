@@ -1,5 +1,4 @@
 diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
-index d6086b3..70fd682 100644
 --- a/runner/src/beam_frame_driver.c
 +++ b/runner/src/beam_frame_driver.c
 @@ -26,6 +26,9 @@
@@ -12,7 +11,7 @@ index d6086b3..70fd682 100644
  /* One NTSC field: 262 scanlines x 1364 master clocks. */
  #define BFD_MASTER_CYCLES_PER_FIELD 357368ull
  #define BFD_MASTER_CYCLES_PER_LINE 1364u
-@@ -256,6 +259,8 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
+@@ -256,6 +259,8 @@
      ppu_rasterApplyLine(g_ppu, line - 1);
      if (ppu_rasterTakeHdmaen(&hdmaen))
        dma_startDma(g_snes->dma, hdmaen, true);
@@ -21,35 +20,10 @@ index d6086b3..70fd682 100644
      ppu_runLine(g_ppu, line);
      if (observer)
        observer(g_ppu, (unsigned)line, context);
-@@ -269,3 +274,13 @@ void snes_beam_frame_driver_reset(void) {
-   s_resume_pc = 0;
-   s_wai_halted = false;
- }
-+
-+void snes_beam_frame_driver_get_exec(uint32_t *pc, bool *wai) {
-+  if (pc) *pc = s_resume_pc;
-+  if (wai) *wai = s_wai_halted;
-+}
-+
-+void snes_beam_frame_driver_set_exec(uint32_t pc, bool wai) {
-+  s_resume_pc = pc;
-+  s_wai_halted = wai;
-+}
 diff --git a/runner/src/beam_frame_driver.h b/runner/src/beam_frame_driver.h
-index 60804fc..ec2dbc0 100644
 --- a/runner/src/beam_frame_driver.h
 +++ b/runner/src/beam_frame_driver.h
-@@ -1,6 +1,9 @@
- #ifndef SNESRECOMP_BEAM_FRAME_DRIVER_H
- #define SNESRECOMP_BEAM_FRAME_DRIVER_H
- 
-+#include <stdbool.h>
-+#include <stdint.h>
-+
- /* Beam-aligned frame driver for whole-program LLE ports.
-  *
-  * One host frame is one PPU field, cut where hardware raises NMI: the beam's
-@@ -26,7 +29,22 @@ struct Ppu;
+@@ -26,6 +26,15 @@
  typedef void SnesBeamRasterObserver(const struct Ppu *ppu, unsigned line, void *context);
  void snes_beam_frame_driver_draw_ppu_frame_observed(
      SnesBeamRasterObserver *observer, void *context);
@@ -65,112 +39,10 @@ index 60804fc..ec2dbc0 100644
  /* Forget the booted machine: the next frame starts from the reset vector. */
  void snes_beam_frame_driver_reset(void);
  
-+/* The driver's execution position is host state outside the rollback
-+ * snapshot. A speculative lane that runs guest frames must carry it with the
-+ * blob it saves. */
-+void snes_beam_frame_driver_get_exec(uint32_t *pc, bool *wai);
-+void snes_beam_frame_driver_set_exec(uint32_t pc, bool wai);
-+
- #endif /* SNESRECOMP_BEAM_FRAME_DRIVER_H */
-diff --git a/runner/src/cpu_state.c b/runner/src/cpu_state.c
-index 57fe6bc..eca209b 100644
---- a/runner/src/cpu_state.c
-+++ b/runner/src/cpu_state.c
-@@ -421,11 +421,17 @@ static uint16 cpu_latch_read16(CpuState *cpu, uint16 value) {
-     return value;
- }
- 
-+static void read_watch_note(uint8 bank, uint16 addr, uint16 value);
-+
- uint8 cpu_read8(CpuState *cpu, uint8 bank, uint16 addr) {
-     if (g_snes && g_snes->cart)
-         cart_note_cpu_bus(g_snes->cart, bank, addr);
-     int off = cpu_wram_offset(bank, addr);
--    if (off >= 0) return cpu_latch_read8(cpu, cpu->ram[off]);
-+    if (off >= 0) {
-+        uint8 value = cpu->ram[off];
-+        read_watch_note(bank, addr, value);
-+        return cpu_latch_read8(cpu, value);
-+    }
-     if (is_hw_reg(bank, addr)) {
-         cpu_pace_cycles(addr);
-         cpu_hw_log(addr, 1, 0);
-@@ -455,6 +461,59 @@ uint8 cpu_read8(CpuState *cpu, uint8 bank, uint16 addr) {
-     return cpu_latch_read8(cpu, *RomPtr(((uint32)bank << 16) | addr));
- }
- 
-+/* Test-only read watch for the level tables. Enabled by
-+ * SNESRECOMP_READ_WATCH_FILE + optional SNESRECOMP_READ_WATCH_FRAME_MIN.
-+ * Logs bank $7F 16-bit reads with frame, address, value and AOT function.
-+ * This is diagnostics only and is never enabled in normal runs. */
-+static int s_read_watch_state; /* 0=uninit, 1=off, 2=on */
-+static FILE *s_read_watch_file;
-+static int s_read_watch_frame_min;
-+static int s_read_watch_frame_max = 0x7fffffff;
-+static int s_read_watch_all;
-+static void read_watch_note(uint8 bank, uint16 addr, uint16 value) {
-+    if (s_read_watch_state == 0) {
-+        const char *path = getenv("SNESRECOMP_READ_WATCH_FILE");
-+        if (!path || !*path) { s_read_watch_state = 1; return; }
-+        s_read_watch_file = fopen(path, "w");
-+        if (!s_read_watch_file) { s_read_watch_state = 1; return; }
-+        const char *lo = getenv("SNESRECOMP_READ_WATCH_FRAME_MIN");
-+        const char *hi = getenv("SNESRECOMP_READ_WATCH_FRAME_MAX");
-+        if (lo && *lo) s_read_watch_frame_min = atoi(lo);
-+        if (hi && *hi) s_read_watch_frame_max = atoi(hi);
-+        const char *all = getenv("SNESRECOMP_READ_WATCH_ALL");
-+        s_read_watch_all = (all && *all && strcmp(all, "0") != 0);
-+        s_read_watch_state = 2;
-+    }
-+    if (s_read_watch_state != 2) return;
-+    if (!s_read_watch_all && bank != 0x7F) return;
-+    extern int snes_frame_counter;
-+    if (snes_frame_counter < s_read_watch_frame_min ||
-+        snes_frame_counter > s_read_watch_frame_max) return;
-+    extern const char *g_last_recomp_func;
-+    extern CpuState g_cpu;
-+    extern const char *g_recomp_stack[];
-+    extern int g_recomp_stack_top;
-+    const char *st0 = g_recomp_stack_top > 0 ? g_recomp_stack[g_recomp_stack_top - 1] : "-";
-+    const char *st1 = g_recomp_stack_top > 1 ? g_recomp_stack[g_recomp_stack_top - 2] : "-";
-+    const char *st2 = g_recomp_stack_top > 2 ? g_recomp_stack[g_recomp_stack_top - 3] : "-";
-+    fprintf(s_read_watch_file,
-+            "%d %02x:%04x %04x A=%04x X=%04x Y=%04x "
-+            "PB=%02x S=%04x NMI=%d IRQ=%d VB=%d V=%u "
-+            "P=%04x/%04x [%s|%s|%s] %s\n",
-+            snes_frame_counter, bank, addr, value,
-+            (unsigned)g_cpu.A, (unsigned)g_cpu.X, (unsigned)g_cpu.Y,
-+            (unsigned)g_cpu.PB, (unsigned)g_cpu.S,
-+            (g_snes && g_snes->inNmi) ? 1 : 0,
-+            (g_snes && g_snes->inIrq) ? 1 : 0,
-+            (g_snes && g_snes->inVblank) ? 1 : 0,
-+            (unsigned)(g_snes ? g_snes->vPos : 0),
-+            (unsigned)(g_cpu.ram[0x023E] | (g_cpu.ram[0x023F] << 8)),
-+            (unsigned)(g_cpu.ram[0x0236] | (g_cpu.ram[0x0237] << 8)),
-+            st0, st1, st2,
-+            g_last_recomp_func ? g_last_recomp_func : "?");
-+    fflush(s_read_watch_file);
-+}
-+
- uint16 cpu_read16(CpuState *cpu, uint8 bank, uint16 addr) {
-     if (g_snes && g_snes->cart)
-         cart_note_cpu_bus(g_snes->cart, bank, addr);
-@@ -471,7 +530,9 @@ uint16 cpu_read16(CpuState *cpu, uint8 bank, uint16 addr) {
-         uint8 hi = (hi_off >= 0)
-             ? cpu->ram[hi_off]
-             : cpu_read8(cpu, bank, hi_addr);
--        return cpu_latch_read16(cpu, (uint16)lo | ((uint16)hi << 8));
-+        uint16 value = (uint16)lo | ((uint16)hi << 8);
-+        read_watch_note(bank, addr, value);
-+        return cpu_latch_read16(cpu, value);
-     }
-     if (is_hw_reg(bank, addr)) {
-         uint8 lo;
 diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
-index 25dcfe0..97f283c 100644
 --- a/runner/src/snes/ppu.c
 +++ b/runner/src/snes/ppu.c
-@@ -68,6 +68,9 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line);
+@@ -68,6 +68,9 @@
  
  static bool ppu_evaluateSprites(Ppu* ppu, int line);
  static uint16_t ppu_getVramRemap(Ppu* ppu);
@@ -180,7 +52,7 @@ index 25dcfe0..97f283c 100644
  static void PpuUpdateWidescreenOamHistory(Ppu *ppu, int line);
  
  
-@@ -1074,6 +1077,49 @@ static bool PpuViewportAllows(Ppu *ppu, uint layer, int screen_x,
+@@ -1074,6 +1077,49 @@
    return layer != 0 || (screen_x >= 0 && screen_x < kPpuXPixels);
  }
  
@@ -230,7 +102,7 @@ index 25dcfe0..97f283c 100644
  // Draw a whole line of a 4bpp background layer into bgBuffers
  static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
                                     uint y, bool sub, uint layer,
-@@ -1110,7 +1156,15 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+@@ -1110,7 +1156,15 @@
    int tileadr1 = tileadr + 7 - (y & 0x7), tileadr0 = tileadr + (y & 0x7);
    const uint16 *addr;
    bool ws_shadow = WsShadowLayerActive(layer);
@@ -247,7 +119,7 @@ index 25dcfe0..97f283c 100644
    for (size_t windex = 0; windex < win.nr; windex++) {
      if (win.bits & (1 << windex))
        continue;  // layer is disabled for this window part
-@@ -1126,7 +1180,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+@@ -1126,7 +1180,7 @@
      if (x & 7) {
        int curw = IntMin(8 - (x & 7), w);
        w -= curw;
@@ -256,7 +128,7 @@ index 25dcfe0..97f283c 100644
        ws_sx += curw;
        NEXT_TP();
        int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
-@@ -1147,7 +1201,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+@@ -1147,7 +1201,7 @@
      }
      // Handle full tiles in the middle
      while (w >= 8) {
@@ -265,7 +137,7 @@ index 25dcfe0..97f283c 100644
        NEXT_TP();
        int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
        PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
-@@ -1166,7 +1220,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+@@ -1166,7 +1220,7 @@
      }
      // Handle remaining clipped part
      if (w) {
@@ -274,7 +146,7 @@ index 25dcfe0..97f283c 100644
        int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
        PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
        uint32 bits = READ_BITS(ta, tile & 0x3ff);
-@@ -1181,6 +1235,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+@@ -1181,6 +1235,7 @@
      }
    }
  #undef WS_TILE
@@ -282,7 +154,7 @@ index 25dcfe0..97f283c 100644
  #undef READ_BITS
  #undef DO_PIXEL
  #undef DO_PIXEL_HFLIP
-@@ -1285,6 +1340,14 @@ static void PpuDrawBackgroundBig(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y,
+@@ -1285,6 +1340,14 @@
      const int right = win.edges[windex + 1];
      PpuZbufType *dstz = dstbuf->data + left + kPpuExtraLeftRight;
      const bool ws_shadow = WsShadowLayerActive((int)layer);
@@ -297,7 +169,7 @@ index 25dcfe0..97f283c 100644
      for (int screen_x = left; screen_x < right; screen_x++, dstz++) {
        const int mx = mosaic ? PpuMosaicAt(ppu, screen_x) : screen_x;
        const int sx = mx + ppu->hScroll[layer];
-@@ -1293,6 +1356,10 @@ static void PpuDrawBackgroundBig(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y,
+@@ -1293,6 +1356,10 @@
          sc += 0x400;
        sc += (sx >> 4) & 31;
        uint16 tile = PpuRenderVram(ppu)[sc & 0x7fff];
@@ -308,7 +180,7 @@ index 25dcfe0..97f283c 100644
        unsigned px = (unsigned)sx & 15, py = (unsigned)sy & 15;
        /* Margins: world-keyed shadow tile + matching world pixel phase.
         * Using live hScroll/vScroll for px/py while the tile key used the
-@@ -1311,6 +1378,11 @@ static void PpuDrawBackgroundBig(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y,
+@@ -1311,6 +1378,11 @@
          if (wpy >= 0)
            py = (unsigned)wpy & 15;
        }
@@ -320,7 +192,7 @@ index 25dcfe0..97f283c 100644
        if (tile & 0x4000) px = 15 - px;
        if (tile & 0x8000) py = 15 - py;
        const unsigned character =
-@@ -1328,7 +1400,9 @@ static void PpuDrawBackgroundBig(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y,
+@@ -1328,7 +1400,9 @@
        if (pixel && z > *dstz)
          *dstz = z + (PpuZbufType)pixel;
      }
@@ -330,86 +202,10 @@ index 25dcfe0..97f283c 100644
  }
  
  static uint16 PpuReadTilemapEntry(Ppu *ppu, uint layer, int tx, int ty) {
-@@ -3179,6 +3253,59 @@ static struct {
-   uint8_t oamAdr, oamInHigh, oamSecondWrite, oamBuffer;
- } s_raster_port;
- 
-+typedef struct {
-+  PpuRasterField f[2];
-+  int cur, armed, have_completed, rendering;
-+  int render_index;
-+  int next;
-+  uint8_t hdmaen;
-+  int hdmaen_pending;
-+  struct {
-+    uint8_t oamAdr, oamInHigh, oamSecondWrite, oamBuffer;
-+  } port;
-+} PpuRasterState;
-+
-+size_t ppu_rasterStateSize(void) { return sizeof(PpuRasterState); }
-+
-+void ppu_rasterStateSave(void *dst, size_t cap) {
-+  if (!dst || cap < sizeof(PpuRasterState)) return;
-+  PpuRasterState *s = (PpuRasterState *)dst;
-+  memcpy(s->f, s_field, sizeof(s_field));
-+  s->cur = s_raster_cur;
-+  s->armed = s_raster_armed;
-+  s->have_completed = s_raster_have_completed;
-+  s->rendering = s_raster_rendering;
-+  s->render_index = s_raster_render == &s_field[0] ? 0
-+                    : s_raster_render == &s_field[1] ? 1 : -1;
-+  s->next = s_raster_next;
-+  s->hdmaen = s_raster_hdmaen;
-+  s->hdmaen_pending = s_raster_hdmaen_pending;
-+  s->port.oamAdr = s_raster_port.oamAdr;
-+  s->port.oamInHigh = s_raster_port.oamInHigh;
-+  s->port.oamSecondWrite = s_raster_port.oamSecondWrite;
-+  s->port.oamBuffer = s_raster_port.oamBuffer;
-+}
-+
-+bool ppu_rasterStateLoad(const void *src, size_t size) {
-+  if (!src || size < sizeof(PpuRasterState)) return false;
-+  const PpuRasterState *s = (const PpuRasterState *)src;
-+  memcpy(s_field, s->f, sizeof(s_field));
-+  s_raster_cur = s->cur;
-+  s_raster_armed = s->armed;
-+  s_raster_have_completed = s->have_completed;
-+  s_raster_rendering = s->rendering;
-+  s_raster_render = s->render_index == 0 ? &s_field[0]
-+                    : s->render_index == 1 ? &s_field[1] : NULL;
-+  s_raster_next = s->next;
-+  s_raster_hdmaen = s->hdmaen;
-+  s_raster_hdmaen_pending = s->hdmaen_pending;
-+  s_raster_port.oamAdr = s->port.oamAdr;
-+  s_raster_port.oamInHigh = s->port.oamInHigh;
-+  s_raster_port.oamSecondWrite = s->port.oamSecondWrite;
-+  s_raster_port.oamBuffer = s->port.oamBuffer;
-+  return true;
-+}
-+
- /* Only the machine's PPU journals: the debug server and a few tools run
-  * ppu_write on scratch copies. */
- static Ppu *raster_machine_ppu(void) {
 diff --git a/runner/src/snes/ppu.h b/runner/src/snes/ppu.h
-index 7e092bb..5ca62cf 100644
 --- a/runner/src/snes/ppu.h
 +++ b/runner/src/snes/ppu.h
-@@ -619,6 +619,14 @@ void ppu_rasterReset(void);
-  * must honor this flag in its draw_ppu_frame and render the LIVE state when
-  * it is set. Default 0. */
- extern int g_ppu_scanout_latch_bypass;
-+/* Whole raster-journal state (both field buffers, cursor, render cursor and
-+ * the OAM port). Host render state, outside the rollback snapshot: a
-+ * speculative lane that runs guest frames must save this before it runs and
-+ * restore it before the real field is drawn. The caller allocates
-+ * ppu_rasterStateSize() bytes. */
-+size_t ppu_rasterStateSize(void);
-+void   ppu_rasterStateSave(void *dst, size_t cap);
-+bool   ppu_rasterStateLoad(const void *src, size_t size);
- int  ppu_rasterDebugDump(char *out, int cap);
- 
- int  ppu_rasterDebugDump(char *out, int cap);
-@@ -737,6 +745,18 @@ bool PpuSetOverlayOamRange(Ppu *ppu, uint8_t first, uint8_t count);
+@@ -737,6 +737,18 @@
  // kPpuExtraLeftRight). 0 restores authentic 256-wide rendering. The internal
  // render width becomes 256 + 2*extra. Drives the dormant extraLeftCur/
  // extraRightCur/extraLeftRight machinery used by the line renderer.
@@ -429,10 +225,9 @@ index 7e092bb..5ca62cf 100644
  
  // Render authentic 256-wide content centered within a `budget`-per-side wider
 diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
-index 3c54f16..c91e3cf 100644
 --- a/runner/src/desktop/host_main.c
 +++ b/runner/src/desktop/host_main.c
-@@ -414,6 +414,7 @@ static struct RendererFuncs g_renderer_funcs;
+@@ -414,6 +414,7 @@
  static int g_savestate_menu_hotkey;
  static int g_rewind_hotkey;
  static int g_open_launcher_hotkey;   /* in_game_launcher only */
@@ -440,7 +235,7 @@ index 3c54f16..c91e3cf 100644
  static uint64_t g_state_generation;
  
  /* The last field actually presented, kept so an overlay can freeze the guest
-@@ -1851,9 +1852,14 @@ static void OverlaySelftestPadTick(unsigned pump) {
+@@ -1851,9 +1852,14 @@
  static void PresentFrozenWithOverlay(void) {
    const uint32_t *panel = NULL;
    int pw = 0, ph = 0;
@@ -458,7 +253,7 @@ index 3c54f16..c91e3cf 100644
  
    /* The draw buffer is the FROZEN FRAME at twice its size, whichever panel
     * is up. It used to be the panel's own size, which is right for the
-@@ -1882,7 +1888,7 @@ static void PresentFrozenWithOverlay(void) {
+@@ -1882,7 +1888,7 @@
      memset(pixel_buffer, 0, (size_t)draw_h * (size_t)pitch);
  
    if (panel) {
@@ -467,7 +262,7 @@ index 3c54f16..c91e3cf 100644
        /* EndDraw applies SNES pixel-aspect correction to this buffer. Keep
         * the menu's stock proportions before that presentation step. */
        snes_ovl_blit_panel(pixel_buffer, pitch, draw_w, draw_h, panel, pw, ph);
-@@ -1903,8 +1909,9 @@ static void PresentFrozenWithOverlay(void) {
+@@ -1903,8 +1909,9 @@
     * it from the module reporting itself open. */
    {
      static int dumped_menu = 0, dumped_rewind = 0;
@@ -479,7 +274,7 @@ index 3c54f16..c91e3cf 100644
      if (dump && !*dumped && panel) {
        FILE *f = fopen(dump, "wb");
        if (f) {
-@@ -1919,6 +1926,7 @@ static void PresentFrozenWithOverlay(void) {
+@@ -1919,6 +1926,7 @@
          fclose(f);
          *dumped = 1;
          fprintf(stderr, "[overlay_dump] wrote %s (%dx%d, %s)\n", dump, draw_w, draw_h,
@@ -487,7 +282,7 @@ index 3c54f16..c91e3cf 100644
                  is_menu ? "save-state browser" : "rewind filmstrip");
        }
      }
-@@ -1963,6 +1971,34 @@ static void RunSavestateMenuLoop(bool *running) {
+@@ -1963,6 +1971,34 @@
                           frames);
  }
  
@@ -522,7 +317,7 @@ index 3c54f16..c91e3cf 100644
  static void RewindKeyDown(int key, int repeat) {
    (void)repeat;
    switch (key) {
-@@ -3021,6 +3057,49 @@ static const char *RestartReason(const Config *before, const char *rom,
+@@ -3021,6 +3057,49 @@
  }
  #endif /* RECOMP_LAUNCHER */
  
@@ -572,7 +367,7 @@ index 3c54f16..c91e3cf 100644
  /* The in-game launcher (SnesDesktopHostGame.in_game_launcher). The guest is
   * FROZEN throughout, exactly like the save-state browser: no RtlRunFrame, no
   * draw_ppu_frame. The game window is hidden rather than covered, so a
-@@ -3954,6 +4033,14 @@ error_reading:;
+@@ -3954,6 +4033,14 @@
            break;
          }
  #endif
@@ -587,7 +382,7 @@ index 3c54f16..c91e3cf 100644
          HandleInput(SNESRECOMP_SDL_EVENT_KEY(event),
                      SNESRECOMP_SDL_EVENT_MOD(event), true);
          break;
-@@ -4284,6 +4371,23 @@ error_reading:;
+@@ -4284,6 +4371,23 @@
        }
      }
      g_rewind_hotkey = 0;
@@ -612,10 +407,9 @@ index 3c54f16..c91e3cf 100644
       * detect on, so a second call in the same frame eats the edge. */
      (void)snes_savestate_menu_poll_open(human);
 diff --git a/runner/src/desktop/host_main.h b/runner/src/desktop/host_main.h
-index 38c5088..e1776fa 100644
 --- a/runner/src/desktop/host_main.h
 +++ b/runner/src/desktop/host_main.h
-@@ -61,6 +61,30 @@ typedef struct SnesDesktopHostFrameStats {
+@@ -61,6 +61,30 @@
    int audio_output_rate;     /* device rate, 0 when audio is disabled */
  } SnesDesktopHostFrameStats;
  
@@ -646,7 +440,7 @@ index 38c5088..e1776fa 100644
  typedef struct SnesDesktopHostGame {
    /* ── Identity ─────────────────────────────────────────────────────────── */
    const char *display_name;      /* "Super Metroid" (report header, launcher) */
-@@ -213,6 +237,8 @@ typedef struct SnesDesktopHostGame {
+@@ -213,6 +237,8 @@
    /* One line added to every refusal. NULL: a note that headered (.smc) and
     * headerless (.sfc) copies of the right dump both work. */
    const char *rom_help;
@@ -655,7 +449,7 @@ index 38c5088..e1776fa 100644
  } SnesDesktopHostGame;
  
  /* The whole program. Returns the process exit code. */
-@@ -223,6 +249,14 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -223,6 +249,14 @@
  int snesrecomp_desktop_frame_width(void);
  int snesrecomp_desktop_frame_height(void);
  void snesrecomp_desktop_set_widescreen(int enabled);
@@ -671,10 +465,9 @@ index 38c5088..e1776fa 100644
  /* Ask the host to reset its pacing clock at the next opportunity (a title
   * that just changed its presentation settings). */
 diff --git a/runner/src/desktop/mmx_config.c b/runner/src/desktop/mmx_config.c
-index 2743775..dac23f2 100644
 --- a/runner/src/desktop/mmx_config.c
 +++ b/runner/src/desktop/mmx_config.c
-@@ -395,7 +395,8 @@ static int GetIniSection(const char *s) {
+@@ -395,7 +395,8 @@
     * "Invalid .ini section" on every start. A section this core has no
     * business parsing is not a malformed file. */
    if (StringEqualsNoCase(s, "[Video]") ||
@@ -685,7 +478,6 @@ index 2743775..dac23f2 100644
    if (StringEqualsNoCase(s, "[Rewind]"))
      return 10;
 diff --git a/runner/src/snes_overlay_draw.c b/runner/src/snes_overlay_draw.c
-index 2652111..4f9efb1 100644
 --- a/runner/src/snes_overlay_draw.c
 +++ b/runner/src/snes_overlay_draw.c
 @@ -6,7 +6,7 @@
@@ -697,7 +489,7 @@ index 2652111..4f9efb1 100644
      {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, {0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00},
      {0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00}, {0x36,0x36,0x7F,0x36,0x7F,0x36,0x36,0x00},
      {0x0C,0x3E,0x03,0x1E,0x30,0x1F,0x0C,0x00}, {0x00,0x63,0x33,0x18,0x0C,0x66,0x63,0x00},
-@@ -37,6 +37,11 @@ static const uint8_t FONT8[59][8] = {
+@@ -37,6 +37,11 @@
      {0x33,0x33,0x33,0x33,0x33,0x1E,0x0C,0x00}, {0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00},
      {0x63,0x63,0x36,0x1C,0x1C,0x36,0x63,0x00}, {0x33,0x33,0x33,0x1E,0x0C,0x0C,0x1E,0x00},
      {0x7F,0x63,0x31,0x18,0x4C,0x66,0x7F,0x00},
@@ -709,7 +501,7 @@ index 2652111..4f9efb1 100644
  };
  
  void snes_ovl_fill_rect(uint32_t *dst, int stride, int h_max,
-@@ -77,7 +82,7 @@ void snes_ovl_draw_char(uint32_t *dst, int stride, int h_max,
+@@ -77,7 +82,7 @@
      int x, y, sx, sy;
      const uint8_t *g;
      if (c >= 'a' && c <= 'z') c = (char)(c - 32);

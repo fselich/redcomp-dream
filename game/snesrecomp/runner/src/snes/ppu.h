@@ -619,14 +619,6 @@ void ppu_rasterReset(void);
  * must honor this flag in its draw_ppu_frame and render the LIVE state when
  * it is set. Default 0. */
 extern int g_ppu_scanout_latch_bypass;
-/* Whole raster-journal state (both field buffers, cursor, render cursor and
- * the OAM port). Host render state, outside the rollback snapshot: a
- * speculative lane that runs guest frames must save this before it runs and
- * restore it before the real field is drawn. The caller allocates
- * ppu_rasterStateSize() bytes. */
-size_t ppu_rasterStateSize(void);
-void   ppu_rasterStateSave(void *dst, size_t cap);
-bool   ppu_rasterStateLoad(const void *src, size_t size);
 int  ppu_rasterDebugDump(char *out, int cap);
 
 int  ppu_rasterDebugDump(char *out, int cap);

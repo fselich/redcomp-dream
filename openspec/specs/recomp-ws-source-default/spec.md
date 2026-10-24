@@ -1,7 +1,9 @@
 # recomp-ws-source-default Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-source-default. Update Purpose after archive.
+
+Which BG1 margin policy applies: source by default, clamp as the only alternative, and how values of removed policies are mapped.
+
 ## Requirements
 ### Requirement: Source is the default 16:9 BG1 policy
 
@@ -22,31 +24,38 @@ set.
 
 ### Requirement: Alternative policies stay selectable
 
-The system SHALL keep `ring`, `ghost`, `clamp` and `wrap` selectable through `SNESRECOMP_WS_OFFWINDOW`. It SHALL honour `SNESRECOMP_WS_TRACK_CLAMP` when `SNESRECOMP_WS_OFFWINDOW` is unset. When neither variable is set, the policy SHALL come from `[Widescreen] Margin` (`source`, `ring`, `clamp` or `wrap`), and `source` when that key is missing. `ghost` SHALL stay selectable only through the environment.
+The system SHALL offer exactly two BG1 margin policies: `source` and `clamp`. The policy SHALL come from `SNESRECOMP_WS_OFFWINDOW`, else `SNESRECOMP_WS_TRACK_CLAMP` (which selects `clamp`), else `[Widescreen] Margin`, else `source`. Values of removed policies SHALL be mapped, not rejected: `ring` and `ghost` SHALL resolve to `source`; `wrap`, `0` and `off` SHALL resolve to `clamp`; any other value SHALL resolve to `source`.
 
 #### Scenario: Explicit clamp
 
 - **WHEN** `SNESRECOMP_WS_OFFWINDOW=clamp`
-- **THEN** BG1 is clamped to the native 256 px as before
+- **THEN** BG1 is clamped to the native 256 px and the margins show the backdrop
 
 #### Scenario: Legacy clamp switch
 
 - **WHEN** only `SNESRECOMP_WS_TRACK_CLAMP` is set
 - **THEN** BG1 is clamped
 
-#### Scenario: Raw wrap
-
-- **WHEN** `SNESRECOMP_WS_OFFWINDOW=wrap`
-- **THEN** the margins show the raw ring, as before this change
-
 #### Scenario: Policy from config.ini
 
-- **WHEN** no margin variable is set and `config.ini` has `[Widescreen] Margin = ring`
-- **THEN** the BG1 margins use the `ring` policy
+- **WHEN** no margin variable is set and `config.ini` has `[Widescreen] Margin = clamp`
+- **THEN** BG1 is clamped
 
-#### Scenario: Ghost not in config.ini
+#### Scenario: Removed fill policy
 
-- **WHEN** `config.ini` has `[Widescreen] Margin = ghost` and no margin variable is set
+- **WHEN** `config.ini` has `[Widescreen] Margin = ring`, or `SNESRECOMP_WS_OFFWINDOW=ghost`
+- **THEN** the policy is `source`
+- **AND** the frame hash equals the `source` case
+
+#### Scenario: Removed raw wrap
+
+- **WHEN** `SNESRECOMP_WS_OFFWINDOW=wrap`, `0` or `off`
+- **THEN** the policy is `clamp`
+- **AND** the frame hash equals the `clamp` case
+
+#### Scenario: Unknown value
+
+- **WHEN** `config.ini` has `[Widescreen] Margin = banana`
 - **THEN** the policy is `source`
 
 ### Requirement: Quiet default

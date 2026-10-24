@@ -11,21 +11,14 @@
 #include "ws_frame.h"
 #include "ws_settings.h"
 
-static WsCullState s_cull;
+static struct {
+    int on;
+    uint16_t base_l, base_r, applied_l, applied_r;
+} s_cull;
 
 int WsCullIsEnabled(void)
 {
     return WsSettingBool(WS_SET_CULL);
-}
-
-void WsCullGet(WsCullState *s)
-{
-    *s = s_cull;
-}
-
-void WsCullSet(const WsCullState *s)
-{
-    s_cull = *s;
 }
 
 static void WsRestoreCull(void)

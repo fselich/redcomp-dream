@@ -3253,59 +3253,6 @@ static struct {
   uint8_t oamAdr, oamInHigh, oamSecondWrite, oamBuffer;
 } s_raster_port;
 
-typedef struct {
-  PpuRasterField f[2];
-  int cur, armed, have_completed, rendering;
-  int render_index;
-  int next;
-  uint8_t hdmaen;
-  int hdmaen_pending;
-  struct {
-    uint8_t oamAdr, oamInHigh, oamSecondWrite, oamBuffer;
-  } port;
-} PpuRasterState;
-
-size_t ppu_rasterStateSize(void) { return sizeof(PpuRasterState); }
-
-void ppu_rasterStateSave(void *dst, size_t cap) {
-  if (!dst || cap < sizeof(PpuRasterState)) return;
-  PpuRasterState *s = (PpuRasterState *)dst;
-  memcpy(s->f, s_field, sizeof(s_field));
-  s->cur = s_raster_cur;
-  s->armed = s_raster_armed;
-  s->have_completed = s_raster_have_completed;
-  s->rendering = s_raster_rendering;
-  s->render_index = s_raster_render == &s_field[0] ? 0
-                    : s_raster_render == &s_field[1] ? 1 : -1;
-  s->next = s_raster_next;
-  s->hdmaen = s_raster_hdmaen;
-  s->hdmaen_pending = s_raster_hdmaen_pending;
-  s->port.oamAdr = s_raster_port.oamAdr;
-  s->port.oamInHigh = s_raster_port.oamInHigh;
-  s->port.oamSecondWrite = s_raster_port.oamSecondWrite;
-  s->port.oamBuffer = s_raster_port.oamBuffer;
-}
-
-bool ppu_rasterStateLoad(const void *src, size_t size) {
-  if (!src || size < sizeof(PpuRasterState)) return false;
-  const PpuRasterState *s = (const PpuRasterState *)src;
-  memcpy(s_field, s->f, sizeof(s_field));
-  s_raster_cur = s->cur;
-  s_raster_armed = s->armed;
-  s_raster_have_completed = s->have_completed;
-  s_raster_rendering = s->rendering;
-  s_raster_render = s->render_index == 0 ? &s_field[0]
-                    : s->render_index == 1 ? &s_field[1] : NULL;
-  s_raster_next = s->next;
-  s_raster_hdmaen = s->hdmaen;
-  s_raster_hdmaen_pending = s->hdmaen_pending;
-  s_raster_port.oamAdr = s->port.oamAdr;
-  s_raster_port.oamInHigh = s->port.oamInHigh;
-  s_raster_port.oamSecondWrite = s->port.oamSecondWrite;
-  s_raster_port.oamBuffer = s->port.oamBuffer;
-  return true;
-}
-
 /* Only the machine's PPU journals: the debug server and a few tools run
  * ppu_write on scratch copies. */
 static Ppu *raster_machine_ppu(void) {

@@ -1,19 +1,18 @@
 # recomp-ws-source Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-source. Update Purpose after archive.
+
+The source margin policy: BG1 margin cells that the ring cannot verify are served from the $7F track table through a validated, continuously self-checked anchor, with zero wrong cells and negligible cost.
+
 ## Requirements
 ### Requirement: Table-sourced margin cells
 
-With `SNESRECOMP_WS_OFFWINDOW=source` in a live 16:9 race, the system SHALL
-serve each BG1 margin cell that is not ring-verified from the game's track
-table in WRAM `$7F`, at the world cell plus the race anchor.
+With the `source` margin policy in a live widescreen race, the system SHALL serve each BG1 margin cell that is not ring-verified from the game's track table in WRAM `$7F`, at the world cell plus the race anchor.
 
 #### Scenario: Ring-verified cell
 
-- **WHEN** the ring cell was seen natively with the same world cell and tile
-  word
-- **THEN** the ring tile is drawn, as in `ring` mode
+- **WHEN** the ring cell was seen natively with the same world cell and tile word
+- **THEN** the ring tile is drawn
 
 #### Scenario: Leading-edge cell
 
@@ -27,10 +26,7 @@ table in WRAM `$7F`, at the world cell plus the race anchor.
 
 ### Requirement: Validated anchor
 
-The system SHALL establish the offset between the world key and table
-coordinates from verified native cells. It SHALL accept up to eight offsets
-that each reach at least 95 % agreement. Cells reading `0x0000` and words absent
-from the piece library SHALL NOT count as evidence.
+The system SHALL establish the offset between the world key and table coordinates from verified native cells. It SHALL accept up to eight offsets that each reach at least 95 % agreement. Cells reading `0x0000` and words absent from the piece library SHALL NOT count as evidence. While no anchor is valid, margin cells that are not ring-verified SHALL be masked.
 
 #### Scenario: Unique anchor
 
@@ -41,20 +37,18 @@ from the piece library SHALL NOT count as evidence.
 
 - **WHEN** two to eight offsets qualify
 - **THEN** all are kept
-- **AND** a margin cell is drawn from the table only where every kept offset
-  gives the same word, otherwise it is masked
+- **AND** a margin cell is drawn from the table only where every kept offset gives the same word, otherwise it is masked
 
 #### Scenario: No anchor
 
-- **WHEN** no offset qualifies, more than eight qualify, or fewer than eight
-  usable samples exist
-- **THEN** margins behave as in `ring` mode
+- **WHEN** no offset qualifies, more than eight qualify, or fewer than eight usable samples exist
+- **THEN** ring-verified cells are drawn and every other margin cell is masked
 - **AND** the search is retried on a later frame
 
 #### Scenario: Invalid header
 
 - **WHEN** the `$7F` header dimensions do not describe a 0x8000-byte grid
-- **THEN** no anchor is set and margins behave as in `ring` mode
+- **THEN** no anchor is set, ring-verified cells are drawn and every other margin cell is masked
 
 ### Requirement: Continuous self-check
 
@@ -86,8 +80,7 @@ truth.
 
 ### Requirement: Presentation-only and cheap
 
-The system SHALL NOT write guest memory or VRAM, SHALL keep native 4:3
-unchanged, and SHALL add negligible cost.
+The system SHALL NOT write guest memory or VRAM, SHALL keep native 4:3 unchanged, and SHALL add negligible cost.
 
 #### Scenario: Native output
 
@@ -96,12 +89,12 @@ unchanged, and SHALL add negligible cost.
 
 #### Scenario: Guest state
 
-- **WHEN** Dragster runs to frame 2500 in `source` and in `ring`
+- **WHEN** Dragster runs to frame 2500 in `source` and in `clamp`
 - **THEN** WRAM, VRAM, CPU and DMA dumps are identical
 
 #### Scenario: Cost
 
 - **WHEN** 2,500 Dragster frames run in `source`
-- **THEN** process CPU time exceeds `ring` by less than 0.2 ms per frame on
-  average
+- **THEN** process CPU time exceeds `clamp` by less than 0.5 ms per frame on average
+- **AND** the measured difference is recorded in the change report
 

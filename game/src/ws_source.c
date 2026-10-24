@@ -18,15 +18,15 @@
 #include <string.h>
 #include <time.h>
 
-/* ── Track-table source (SNESRECOMP_WS_OFFWINDOW=source) ──────────────────
+/* ── Track-table source (margin policy `source`) ──────────────────────────
  *
  * The whole track is in WRAM bank $7F from load to finish (RNC1-unpacked by
  * $81:B8F1): a u16 piece-id grid at $7F:000F (cols x rows, kRam7fTrackGridBytes bytes) and
- * a library of 4x4-cell pieces at $7F:800F. See docs/UNIRACERS_TRACK_FORMAT.md.
- * Margin cells that Option A cannot verify are read from that table at
+ * a library of 4x4-cell pieces at $7F:800F. See docs/formats/TRACK_FORMAT.md.
+ * Margin cells that the ring cannot verify are read from that table at
  * world + anchor. The anchor (table cell - world key, constant per race) is
  * searched from the verified native cells and re-checked every frame; while
- * it is invalid the margins are masked exactly as in `ring` mode.
+ * it is invalid only ring-verified cells are drawn and the rest is masked.
  * Ring cells that read 0x0000 are never used as evidence: at race start the
  * game leaves some ring cells unwritten (they show 0x0000 natively for a few
  * frames), so they say nothing about the table. Nor are words that occur
@@ -37,8 +37,8 @@
  * self-check uses this frame's cells only. Repeated sections can leave a few
  * equally good anchors; up to WS_SRC_MAX_ANCHORS are kept and a margin cell is
  * served only where all of them give the same word (the self-check prunes
- * them as the camera moves on). Presentation-only: reads
- * g_ram, writes nothing. openspec/changes/uniracers-ws-source. */
+ * them as the camera moves on). Presentation-only: reads g_ram, writes
+ * nothing. See openspec/changes/archive/2026-10-22-uniracers-ws-source. */
 #define WS_SRC_MIN_SAMPLES 8
 #define WS_SRC_MAX_SAMPLES 256
 #define WS_SRC_CHECK_SAMPLES 32
@@ -56,7 +56,6 @@ static int32_t s_src_ax[WS_SRC_MAX_ANCHORS], s_src_ay[WS_SRC_MAX_ANCHORS];
 static int s_src_cols, s_src_rows;          /* grid size in cells */
 static unsigned s_src_generation;
 static int s_src_race_frame0 = -1;          /* first live frame of this scene */
-static uint64_t s_src_served, s_src_check_fail, s_src_anchors;
 static uint8_t s_src_word_present[0x10000 / 8];  /* words in the piece library */
 static uint16_t s_src_present_end;              /* library end it was built for */
 
@@ -131,9 +130,9 @@ static int WsSrcCell(int32_t tx, int32_t ty, uint16_t *out)
 static int WsSrcSamples(WsSrcSample *out, int max, int all_frames)
 {
     int n = 0;
-    for (int cy = 0; cy < WS_OW_CELLS && n < max; cy++) {
-        for (int cx = 0; cx < WS_OW_CELLS && n < max; cx++) {
-            const WsOwSeen *s = WsRingSeenCell(cy, cx);
+    for (int cy = 0; cy < WS_RING_CELLS && n < max; cy++) {
+        for (int cx = 0; cx < WS_RING_CELLS && n < max; cx++) {
+            const WsRingSeen *s = WsRingSeenCell(cy, cx);
             if (!s->valid || !WsSrcWordUsable(s->tile))
                 continue;
             if (!all_frames && s->frame != snes_frame_counter)
@@ -241,7 +240,6 @@ static void WsSrcSearch(void)
                 s_src_ay[i] = sur_ay[i];
             }
             s_src_valid = survivors;
-            s_src_anchors++;
             WsSrcLog("%d anchor ok ax=%d ay=%d anchors=%d grid=%dx%d samples=%d "
                      "seed=%04x candidates=%d latency=%d search_ms=%.3f\n",
                      snes_frame_counter, sur_ax[0], sur_ay[0], survivors,
@@ -296,7 +294,6 @@ static void WsSrcFrame(void)
     }
     s_src_valid = kept;
     if (!kept) {
-        s_src_check_fail++;
         WsSrcLog("%d anchor dropped: no anchor passes the self-check\n",
                  snes_frame_counter);
     } else if (kept != before && kept == 1) {
@@ -314,7 +311,6 @@ static void WsSrcInvalidate(void)
 
 
 int WsSourceValid(void) { return s_src_valid > 0; }
-int WsSourceAnchorCount(void) { return s_src_valid; }
 int32_t WsSourceAnchorX(int i) { return s_src_ax[i]; }
 int32_t WsSourceAnchorY(int i) { return s_src_ay[i]; }
 
@@ -337,6 +333,5 @@ int WsSourceAgree(int32_t wx, int32_t wy, uint16_t *out)
     return 1;
 }
 
-void WsSourceNoteServed(void) { s_src_served++; }
 void WsSourceFrame(void) { WsSrcFrame(); }
 void WsSourceInvalidate(void) { WsSrcInvalidate(); }

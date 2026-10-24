@@ -10,6 +10,7 @@
 
 #include "config.h"
 #include "ws_frame.h"
+#include "ws_margin.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -24,12 +25,8 @@ static const int kMaxWidthPresets[] = { 384, 448, 512 };
 static const int kVolumePresets[] = {
     0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
 };
-static const char *const kMarginValues[] = {
-    "source", "ring", "clamp", "wrap"
-};
-static const char *const kMarginLabels[] = {
-    "SOURCE", "RING", "CLAMP", "WRAP"
-};
+static const char *const kMarginValues[] = { "source", "clamp" };
+static const char *const kMarginLabels[] = { "SOURCE", "CLAMP" };
 static const char *const kFullscreenValues[] = { "0", "1", "2" };
 static const char *const kFullscreenLabels[] = {
     "VENTANA", "COMPLETA", "EXCLUSIVA"
@@ -56,10 +53,10 @@ static const WsSettingDesc kSettings[WS_SET_COUNT] = {
       WS_APPLY_LIVE, 0 },
     ENUM_DESC(WS_SET_MARGIN, "MARGEN PISTA", "Widescreen", "Margin",
               "SNESRECOMP_WS_OFFWINDOW", "SNESRECOMP_WS_TRACK_CLAMP",
-              kMarginValues, kMarginLabels, 4, "source", WS_APPLY_LIVE, 0),
-    BOOL_DESC(WS_SET_HUD, "MARCADOR ANCHO", "Widescreen", "Hud",
+              kMarginValues, kMarginLabels, 2, "source", WS_APPLY_LIVE, 0),
+    BOOL_DESC(WS_SET_HUD, "MARCADOR A LOS LADOS", "Widescreen", "Hud",
               "SNESRECOMP_WS_HUD", "1", WS_APPLY_LIVE, 0),
-    BOOL_DESC(WS_SET_CULL, "VENTANA CULL", "Widescreen", "Cull",
+    BOOL_DESC(WS_SET_CULL, "RIVAL EN MARGENES", "Widescreen", "Cull",
               "SNESRECOMP_WS_CULL", "1", WS_APPLY_LIVE, 0),
     ENUM_DESC(WS_SET_FULLSCREEN, "PANTALLA", "Graphics", "Fullscreen",
               NULL, NULL, kFullscreenValues, kFullscreenLabels, 3, "0",
@@ -85,7 +82,6 @@ typedef struct {
 static WsSettingRuntime s_values[WS_SET_COUNT];
 static int s_changed[WS_SET_COUNT];
 
-extern void WsOwReset(void);
 
 const WsSettingDesc *WsSetting(WsSettingId id)
 {
@@ -94,17 +90,6 @@ const WsSettingDesc *WsSetting(WsSettingId id)
 }
 
 int WsSettingsCount(void) { return WS_SET_COUNT; }
-
-static char *Trim(char *s)
-{
-    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
-    char *e = s + strlen(s);
-    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' ||
-                     e[-1] == '\n'))
-        e--;
-    *e = 0;
-    return s;
-}
 
 static int FindChoice(const WsSettingDesc *d, const char *value)
 {
@@ -118,11 +103,11 @@ static int FindChoice(const WsSettingDesc *d, const char *value)
  * of the listed choices an Aspect keeps the file's spelling (a decimal, say);
  * every other option falls back to its default. */
 static void Canonicalize(const WsSettingDesc *d, const char *raw,
-                         char *out, size_t cap, int allow_ghost)
+                         char *out, size_t cap)
 {
     char buf[128];
     snprintf(buf, sizeof(buf), "%s", raw ? raw : "");
-    const char *v = Trim(buf);
+    const char *v = WsTrim(buf);
 
     if (!*v) {
         snprintf(out, cap, "%s", d->default_value);
@@ -154,15 +139,13 @@ static void Canonicalize(const WsSettingDesc *d, const char *raw,
             snprintf(out, cap, "%s", v);
             return;
         }
-        if (d->id == WS_SET_MARGIN) {
-            if (WsCiEq(v, "0") || WsCiEq(v, "off")) {
-                snprintf(out, cap, "wrap");
-                return;
-            }
-            if (allow_ghost && WsCiEq(v, "ghost")) {
-                snprintf(out, cap, "ghost");
-                return;
-            }
+        /* Values of the removed policies: `wrap`/`0`/`off` asked for no
+         * fill, the closest remaining policy is clamp; `ring`, `ghost` and
+         * anything else fall through to the default (source). */
+        if (d->id == WS_SET_MARGIN &&
+            (WsCiEq(v, "wrap") || WsCiEq(v, "0") || WsCiEq(v, "off"))) {
+            snprintf(out, cap, "clamp");
+            return;
         }
         snprintf(out, cap, "%s", d->default_value);
         return;
@@ -170,12 +153,10 @@ static void Canonicalize(const WsSettingDesc *d, const char *raw,
     }
 }
 
-static void Store(WsSettingId id, const char *raw, WsSettingSource source,
-                  int allow_ghost)
+static void Store(WsSettingId id, const char *raw, WsSettingSource source)
 {
     const WsSettingDesc *d = &kSettings[id];
-    Canonicalize(d, raw, s_values[id].value, sizeof(s_values[id].value),
-                 allow_ghost);
+    Canonicalize(d, raw, s_values[id].value, sizeof(s_values[id].value));
     s_values[id].source = source;
 }
 
@@ -186,28 +167,28 @@ void WsSettingsLoad(void)
     memset(s_changed, 0, sizeof(s_changed));
     for (int i = 0; i < WS_SET_COUNT; i++) {
         const WsSettingDesc *d = &kSettings[i];
-        Store(d->id, d->default_value, WS_SOURCE_DEFAULT, 0);
+        Store(d->id, d->default_value, WS_SOURCE_DEFAULT);
         if (d->host_owned) continue;
 
         char section[32];
         snprintf(section, sizeof(section), "[%s]", d->section);
         if (WsConfigReadStr("config.ini", section, d->key, buf,
                             sizeof(buf)) && buf[0])
-            Store(d->id, buf, WS_SOURCE_CONFIG, 0);
+            Store(d->id, buf, WS_SOURCE_CONFIG);
         if (WsConfigReadStr("config.local.ini", section, d->key, buf,
                             sizeof(buf)) && buf[0])
-            Store(d->id, buf, WS_SOURCE_LOCAL, 0);
+            Store(d->id, buf, WS_SOURCE_LOCAL);
 
         if (d->env) {
             const char *e = WsEnvStr(d->env);
             if (e && *e) {
-                Store(d->id, e, WS_SOURCE_ENV, d->id == WS_SET_MARGIN);
+                Store(d->id, e, WS_SOURCE_ENV);
                 continue;
             }
         }
         if (d->legacy_env) {
             const char *e = WsEnvStr(d->legacy_env);
-            if (e && *e) Store(d->id, "clamp", WS_SOURCE_ENV, 0);
+            if (e && *e) Store(d->id, "clamp", WS_SOURCE_ENV);
         }
     }
 
@@ -215,17 +196,17 @@ void WsSettingsLoad(void)
      * and config.local.ini in order. Only widescreen has an environment
      * override. */
     Store(WS_SET_WIDESCREEN, g_config.widescreen ? "1" : "0",
-          WS_SOURCE_CONFIG, 0);
+          WS_SOURCE_CONFIG);
     {
         const char *e = WsEnvStr("SNESRECOMP_WS");
-        if (e && *e) Store(WS_SET_WIDESCREEN, e, WS_SOURCE_ENV, 0);
+        if (e && *e) Store(WS_SET_WIDESCREEN, e, WS_SOURCE_ENV);
     }
     snprintf(buf, sizeof(buf), "%d", g_config.fullscreen ? g_config.fullscreen : 0);
-    Store(WS_SET_FULLSCREEN, buf, WS_SOURCE_CONFIG, 0);
+    Store(WS_SET_FULLSCREEN, buf, WS_SOURCE_CONFIG);
     snprintf(buf, sizeof(buf), "%d", (int)SnesDisplayAspect_Clamp(g_config.display_aspect));
-    Store(WS_SET_PIXEL_ASPECT, buf, WS_SOURCE_CONFIG, 0);
+    Store(WS_SET_PIXEL_ASPECT, buf, WS_SOURCE_CONFIG);
     snprintf(buf, sizeof(buf), "%d", g_config.volume);
-    Store(WS_SET_VOLUME, buf, WS_SOURCE_CONFIG, 0);
+    Store(WS_SET_VOLUME, buf, WS_SOURCE_CONFIG);
 }
 
 void WsSettingsSyncHost(void)
@@ -233,14 +214,14 @@ void WsSettingsSyncHost(void)
     char buf[16];
     if (s_values[WS_SET_WIDESCREEN].source != WS_SOURCE_ENV) {
         snprintf(buf, sizeof(buf), "%d", g_config.widescreen ? 1 : 0);
-        Store(WS_SET_WIDESCREEN, buf, WS_SOURCE_CONFIG, 0);
+        Store(WS_SET_WIDESCREEN, buf, WS_SOURCE_CONFIG);
     }
     snprintf(buf, sizeof(buf), "%d", g_config.fullscreen ? g_config.fullscreen : 0);
-    Store(WS_SET_FULLSCREEN, buf, WS_SOURCE_CONFIG, 0);
+    Store(WS_SET_FULLSCREEN, buf, WS_SOURCE_CONFIG);
     snprintf(buf, sizeof(buf), "%d", (int)SnesDisplayAspect_Clamp(g_config.display_aspect));
-    Store(WS_SET_PIXEL_ASPECT, buf, WS_SOURCE_CONFIG, 0);
+    Store(WS_SET_PIXEL_ASPECT, buf, WS_SOURCE_CONFIG);
     snprintf(buf, sizeof(buf), "%d", g_config.volume);
-    Store(WS_SET_VOLUME, buf, WS_SOURCE_CONFIG, 0);
+    Store(WS_SET_VOLUME, buf, WS_SOURCE_CONFIG);
 }
 
 const char *WsSettingValue(WsSettingId id)
@@ -327,7 +308,7 @@ int WsSettingsSetValue(WsSettingId id, const char *value)
     const WsSettingDesc *d = WsSetting(id);
     if (!d || WsSettingLocked(id)) return 0;
     char next[64];
-    Canonicalize(d, value, next, sizeof(next), 0);
+    Canonicalize(d, value, next, sizeof(next));
     if (strcmp(next, s_values[id].value) == 0) return 0;
     snprintf(s_values[id].value, sizeof(s_values[id].value), "%s", next);
     s_changed[id] = 1;
@@ -383,7 +364,7 @@ void WsSettingsOnChange(WsSettingId id, const char *old_value)
 {
     if (id == WS_SET_MARGIN && old_value &&
         strcmp(old_value, s_values[id].value) != 0)
-        WsOwReset();
+        WsMarginReset();
 }
 
 static int SettingDiffers(const WsSettingDesc *d)
@@ -394,7 +375,7 @@ static int SettingDiffers(const WsSettingDesc *d)
     if (!WsConfigReadStr("config.ini", section, d->key, raw, sizeof(raw)))
         return 1;
     char canon[64];
-    Canonicalize(d, raw, canon, sizeof(canon), 0);
+    Canonicalize(d, raw, canon, sizeof(canon));
     return strcmp(canon, s_values[d->id].value) != 0;
 }
 

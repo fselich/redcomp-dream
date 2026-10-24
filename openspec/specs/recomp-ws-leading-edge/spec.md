@@ -1,24 +1,22 @@
 # recomp-ws-leading-edge Specification
 
 ## Purpose
-TBD - created by archiving change uniracers-ws-leading-edge. Update Purpose after archive.
+
+Ring-verified BG1 margin cells: a margin cell is drawn from the ring only when the native view confirmed its world cell and tile word; the first stage of the source policy.
+
 ## Requirements
 ### Requirement: Verified ring cells
 
-With `SNESRECOMP_WS_OFFWINDOW=ring` or `source`, the system SHALL serve a BG1
-margin cell from the ring only when its world key and tile word were confirmed
-in the native view, and SHALL render every other margin cell as background.
+With the `source` margin policy, the system SHALL serve a BG1 margin cell from the ring when its world key and tile word were confirmed in the native view. A cell that is not verified SHALL be served from the track table as `recomp-ws-source` specifies, and otherwise rendered as background.
 
 #### Scenario: Trailing cell verified
 
-- **WHEN** a margin cell's ring entry was seen in the native view with the same
-  world cell and the VRAM word is unchanged
+- **WHEN** a margin cell's ring entry was seen in the native view with the same world cell and the VRAM word is unchanged
 - **THEN** the cell is drawn from the ring
 
 #### Scenario: Stale leading cell
 
-- **WHEN** a margin cell's ring entry holds a different world cell, or was
-  never seen natively
+- **WHEN** a margin cell's ring entry holds a different world cell, or was never seen natively, and the track table cannot serve it
 - **THEN** the cell is drawn as background
 - **AND** it is counted as masked, not as wrong
 
@@ -84,20 +82,18 @@ The system SHALL NOT change native 4:3 output or guest simulation.
 
 ### Requirement: Dedicated switch
 
-The system SHALL expose the prototype only through `SNESRECOMP_WS_OFFWINDOW`
-and SHALL keep the global BG1 clamp as the default.
+The margin policy SHALL be chosen as `recomp-ws-source-default` specifies. With `source`, the global BG1 clamp SHALL NOT be applied to BG1; with `clamp`, the margin hooks SHALL NOT be installed. HUD and cull policies SHALL be independent of the margin policy.
 
-#### Scenario: Switch unset
+#### Scenario: Source
 
-- **WHEN** `SNESRECOMP_WS_OFFWINDOW` is unset or `0`
-- **THEN** behaviour is identical to the current build
-
-#### Scenario: Switch set
-
-- **WHEN** it is `ring` or `source`
-- **THEN** the global BG1 clamp and the repeat experiment are not applied to
-  BG1
+- **WHEN** the policy is `source`
+- **THEN** the global BG1 clamp is not applied
 - **AND** HUD and cull policies are unchanged
+
+#### Scenario: Clamp
+
+- **WHEN** the policy is `clamp`
+- **THEN** no margin line or tile hook is installed for the frame
 
 ### Requirement: Per-option decision
 

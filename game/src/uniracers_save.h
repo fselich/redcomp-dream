@@ -4,8 +4,8 @@
  * settings model every frame. With the option on (and outside netplay) it
  * raises the active save's tour reveal stage to "all nine tours" -- a guest
  * SRAM write, permanent for that save. With the option off it writes nothing.
- * See docs/UNIRACERS_SAVE_FORMAT.md and
- * openspec/changes/uniracers-unlock-tours.
+ * See docs/formats/SAVE_FORMAT.md and
+ * openspec/changes/archive/2026-10-23-uniracers-unlock-tours.
  */
 #ifndef UNIRACERS_SAVE_H
 #define UNIRACERS_SAVE_H

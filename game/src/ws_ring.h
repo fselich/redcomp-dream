@@ -1,8 +1,11 @@
-/* BG1 ring observation, margin policy and tile hook.
+/* BG1 ring observation.
  *
- * Owns the 32x32 seen table (world cell + tile word), the 10-bit scroll
- * unwrap, the per-line hook and the margin policy (`wrap`, `ring`, `source`,
- * `ghost`, `clamp`). Presentation-only; reads guest memory and VRAM.
+ * The race BG1 map is a 32x32 ring of 16x16 cells (512 px each way) that the
+ * game rewrites as the camera moves. This module records, per ring slot, the
+ * world cell and tile word the native 256 px view showed (the "seen" table),
+ * and unwraps the 10-bit scroll registers into an absolute world scroll. It
+ * holds no policy: ws_margin.[ch] decides what the margins show.
+ * Presentation-only; reads guest VRAM and PPU registers.
  */
 #ifndef WS_RING_H
 #define WS_RING_H
@@ -11,52 +14,40 @@
 
 #include "snes/ppu.h"
 
-enum { WS_OW_CELLS = 32, WS_OW_LINE_FIRST = 1, WS_OW_LINE_LAST = 224 };
+enum { WS_RING_CELLS = 32, WS_RING_LINE_FIRST = 1 };
 
 typedef struct {
     int32_t wx, wy;
     uint16_t tile;
     uint8_t valid;
     int frame;      /* snes_frame_counter of the last native observation */
-} WsOwSeen;
+} WsRingSeen;
 
-enum {
-    WS_OW_WRAP = 0,
-    WS_OW_RING = 1,
-    WS_OW_SOURCE = 2,
-    WS_OW_GHOST = 3,
-    WS_OW_CLAMP = 4,
-};
+/* Forget the seen table and the scroll unwrap. */
+void WsRingReset(void);
+/* Per-line observation, before the line is drawn. On the first visible line
+ * it starts the frame (and resets the scene when the BG1 map base or BG mode
+ * changed); every line records the cells the native view shows. Returns 1
+ * when this call reset the scene. */
+int WsRingLine(Ppu *ppu, int line);
+/* 1 between the first observed line and WsRingFrameEnd(). */
+int WsRingFrameActive(void);
+void WsRingFrameEnd(void);
 
-int WsOffwindowMode(void);
-int WsOffwindowHooked(int mode);
-int WsOwVerbose(void);
-void WsOwReset(void);
-void WsOffwindowLine(Ppu *ppu, unsigned line, void *context);
-uint16_t WsOffwindowTile(Ppu *ppu, unsigned layer, int screen_x, int line,
-                         uint16_t tile, uint16_t sc, void *context);
+/* Absolute scroll of the line being rasterized. */
+void WsRingLineScroll(const Ppu *ppu, int32_t *h, int32_t *v);
+/* VRAM word address of ring slot (cx, cy) in this frame's BG1 map. */
+uint16_t WsRingMapAddr(int cx, int cy);
+
+const WsRingSeen *WsRingSeenCell(int cy, int cx);
+unsigned WsRingSceneGeneration(void);
+int WsRingScrollValid(void);
+int32_t WsRingScrollH(void);
+int32_t WsRingScrollV(void);
 
 /* Shared ring math. */
 int32_t WsRingFloor16(int64_t v);
 int WsRingMod16(int64_t v);
 int WsWrapDelta10(uint16_t now, uint16_t prev);
-
-typedef void (*WsRingLineSink)(void *context, int cx, int cy, int32_t wx,
-                               int32_t wy, uint16_t tile);
-void WsRingWalkLine(Ppu *ppu, uint16_t map_base, int32_t h, int32_t v,
-                    int line, WsRingLineSink sink, void *context);
-
-/* Cross-module reads. */
-const WsOwSeen *WsRingSeenCell(int cy, int cx);
-unsigned WsRingSceneGeneration(void);
-int WsRingSceneValid(void);
-uint16_t WsRingMapBase(void);
-uint8_t WsRingPrevBgMode(void);
-int WsRingScrollValid(void);
-int32_t WsRingScrollH(void);
-int32_t WsRingScrollV(void);
-int WsRingScrollSeed(int32_t *h, int32_t *v, uint16_t *ph, uint16_t *pv);
-void WsRingFrameEnd(int ow_mode);
-void WsRingLogLive(int live);
 
 #endif /* WS_RING_H */

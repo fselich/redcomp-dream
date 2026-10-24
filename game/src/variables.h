@@ -42,7 +42,7 @@ enum {
     kRam7fTrackGridBytes   = 0x8000,  /* fixed id-grid size */
 };
 
-/* Battery SRAM (g_sram index). See docs/UNIRACERS_SAVE_FORMAT.md; the
+/* Battery SRAM (g_sram index). See docs/formats/SAVE_FORMAT.md; the
  * checksummed block table lives in uniracers_save.c. */
 enum {
     kSramSize          = 0x2000,

@@ -1,7 +1,7 @@
-/* Widescreen frame predicates, margin and per-frame context.
+/* Widescreen frame predicates, extra width and per-frame context.
  *
  * Owns the single definition of "widescreen enabled" and "live race", the
- * clamped margin, the cached environment lookups and the small parsing
+ * clamped extra width per side (WsExtra), the cached environment lookups and the small parsing
  * helpers. Reads guest state and g_config; writes neither.
  */
 #ifndef WS_FRAME_H
@@ -29,7 +29,6 @@ void WsFrameCtxBuild(WsFrameCtx *ctx, Ppu *ppu);
  * looked up once. g_config values are NOT cached. */
 const char *WsEnvStr(const char *name);
 int WsEnvFlag(const char *name, int def);
-int WsEnvInt(const char *name, int def, int lo, int hi);
 
 /* Small shared parsers. */
 char *WsTrim(char *s);
@@ -42,10 +41,5 @@ int WsParseBool(const char *v, int def);
  * keys there without a framework change. */
 int WsConfigReadStr(const char *path, const char *section, const char *key,
                     char *out, size_t cap);
-
-/* Boolean `key` from `section` of config.ini, then config.local.ini, falling
- * back to `def`. Kept for the debug helpers; user options live in
- * ws_settings.[ch]. */
-int WsConfigBool(const char *section, const char *key, int def);
 
 #endif /* WS_FRAME_H */

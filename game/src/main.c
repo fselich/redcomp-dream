@@ -50,7 +50,8 @@
 #define SNES_GAME_VERSION "dev"
 #endif
 
-/* Race frame width (openspec/changes/uniracers-ws-ultrawide). The target
+/* Race frame width
+ * (openspec/changes/archive/2026-10-22-uniracers-ws-ultrawide). The target
  * aspect comes from the settings model ("W:H", a decimal, or "auto"); with
  * "auto" it follows the window aspect, never narrower than 16:9. The width is
  * capped by MaxWidth (default 512): the renderer decodes the 9-bit OAM X as

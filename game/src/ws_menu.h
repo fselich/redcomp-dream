@@ -2,7 +2,8 @@
  *
  * Registers a SnesTitleMenu with the host, draws a 512x448 panel with the
  * shared overlay primitives, applies values live through the settings model
- * and saves them to config.ini. See openspec/changes/uniracers-ingame-options.
+ * and saves them to config.ini. See
+ * openspec/changes/archive/2026-10-23-uniracers-ingame-options.
  */
 #ifndef WS_MENU_H
 #define WS_MENU_H

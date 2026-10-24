@@ -1,13 +1,13 @@
 # recomp/
 
-Analysis input for Uniracers. `tools/regen.sh` reads this directory and
+Analysis input for Uniracers. `game/tools/regen.sh` reads this directory and
 writes `src/gen/`.
 
 | File | Owner | Notes |
 |---|---|---|
 | `bank*.cfg` | you, plus generated blocks | Per-bank analysis directives |
 | `symbols.toml` | you | Progressive name map; the source of truth |
-| `funcs.h` | generated | Re-synced by `tools/regen.sh` — do not hand-edit |
+| `funcs.h` | generated | Re-synced by `game/tools/regen.sh` — do not hand-edit |
 
 The block between `>>> BEGIN symbols.toml` and `<<< END symbols.toml` in
 each bank cfg is rewritten from `symbols.toml` on every regen. Edit

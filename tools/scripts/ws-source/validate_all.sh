@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Validate SNESRECOMP_WS_OFFWINDOW=<mode> on the six leading-edge captures
-# (uniracers-ws-source task 5.1). Writes logs/{src,ow-src,run-src}-<tag>-* and
-# appends the scores to logs/validation-<mode>.txt.
-# usage: validate_all.sh [mode=source]
+# Validate a margin policy (source or clamp) on the six leading-edge captures
+# (archived change uniracers-ws-source, task 5.1). Writes
+# work/ws-source/logs/{src,ow-src,run-src}-<tag>-* and appends the scores to
+# logs/validation-<mode>.txt.
+# usage: validate_all.sh [source|clamp]
 set -u
 MODE=${1:-source}
 H="$(cd "$(dirname "$0")" && pwd)"

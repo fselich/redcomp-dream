@@ -421,17 +421,11 @@ static uint16 cpu_latch_read16(CpuState *cpu, uint16 value) {
     return value;
 }
 
-static void read_watch_note(uint8 bank, uint16 addr, uint16 value);
-
 uint8 cpu_read8(CpuState *cpu, uint8 bank, uint16 addr) {
     if (g_snes && g_snes->cart)
         cart_note_cpu_bus(g_snes->cart, bank, addr);
     int off = cpu_wram_offset(bank, addr);
-    if (off >= 0) {
-        uint8 value = cpu->ram[off];
-        read_watch_note(bank, addr, value);
-        return cpu_latch_read8(cpu, value);
-    }
+    if (off >= 0) return cpu_latch_read8(cpu, cpu->ram[off]);
     if (is_hw_reg(bank, addr)) {
         cpu_pace_cycles(addr);
         cpu_hw_log(addr, 1, 0);
@@ -461,59 +455,6 @@ uint8 cpu_read8(CpuState *cpu, uint8 bank, uint16 addr) {
     return cpu_latch_read8(cpu, *RomPtr(((uint32)bank << 16) | addr));
 }
 
-/* Test-only read watch for the level tables. Enabled by
- * SNESRECOMP_READ_WATCH_FILE + optional SNESRECOMP_READ_WATCH_FRAME_MIN.
- * Logs bank $7F 16-bit reads with frame, address, value and AOT function.
- * This is diagnostics only and is never enabled in normal runs. */
-static int s_read_watch_state; /* 0=uninit, 1=off, 2=on */
-static FILE *s_read_watch_file;
-static int s_read_watch_frame_min;
-static int s_read_watch_frame_max = 0x7fffffff;
-static int s_read_watch_all;
-static void read_watch_note(uint8 bank, uint16 addr, uint16 value) {
-    if (s_read_watch_state == 0) {
-        const char *path = getenv("SNESRECOMP_READ_WATCH_FILE");
-        if (!path || !*path) { s_read_watch_state = 1; return; }
-        s_read_watch_file = fopen(path, "w");
-        if (!s_read_watch_file) { s_read_watch_state = 1; return; }
-        const char *lo = getenv("SNESRECOMP_READ_WATCH_FRAME_MIN");
-        const char *hi = getenv("SNESRECOMP_READ_WATCH_FRAME_MAX");
-        if (lo && *lo) s_read_watch_frame_min = atoi(lo);
-        if (hi && *hi) s_read_watch_frame_max = atoi(hi);
-        const char *all = getenv("SNESRECOMP_READ_WATCH_ALL");
-        s_read_watch_all = (all && *all && strcmp(all, "0") != 0);
-        s_read_watch_state = 2;
-    }
-    if (s_read_watch_state != 2) return;
-    if (!s_read_watch_all && bank != 0x7F) return;
-    extern int snes_frame_counter;
-    if (snes_frame_counter < s_read_watch_frame_min ||
-        snes_frame_counter > s_read_watch_frame_max) return;
-    extern const char *g_last_recomp_func;
-    extern CpuState g_cpu;
-    extern const char *g_recomp_stack[];
-    extern int g_recomp_stack_top;
-    const char *st0 = g_recomp_stack_top > 0 ? g_recomp_stack[g_recomp_stack_top - 1] : "-";
-    const char *st1 = g_recomp_stack_top > 1 ? g_recomp_stack[g_recomp_stack_top - 2] : "-";
-    const char *st2 = g_recomp_stack_top > 2 ? g_recomp_stack[g_recomp_stack_top - 3] : "-";
-    fprintf(s_read_watch_file,
-            "%d %02x:%04x %04x A=%04x X=%04x Y=%04x "
-            "PB=%02x S=%04x NMI=%d IRQ=%d VB=%d V=%u "
-            "P=%04x/%04x [%s|%s|%s] %s\n",
-            snes_frame_counter, bank, addr, value,
-            (unsigned)g_cpu.A, (unsigned)g_cpu.X, (unsigned)g_cpu.Y,
-            (unsigned)g_cpu.PB, (unsigned)g_cpu.S,
-            (g_snes && g_snes->inNmi) ? 1 : 0,
-            (g_snes && g_snes->inIrq) ? 1 : 0,
-            (g_snes && g_snes->inVblank) ? 1 : 0,
-            (unsigned)(g_snes ? g_snes->vPos : 0),
-            (unsigned)(g_cpu.ram[0x023E] | (g_cpu.ram[0x023F] << 8)),
-            (unsigned)(g_cpu.ram[0x0236] | (g_cpu.ram[0x0237] << 8)),
-            st0, st1, st2,
-            g_last_recomp_func ? g_last_recomp_func : "?");
-    fflush(s_read_watch_file);
-}
-
 uint16 cpu_read16(CpuState *cpu, uint8 bank, uint16 addr) {
     if (g_snes && g_snes->cart)
         cart_note_cpu_bus(g_snes->cart, bank, addr);
@@ -530,9 +471,7 @@ uint16 cpu_read16(CpuState *cpu, uint8 bank, uint16 addr) {
         uint8 hi = (hi_off >= 0)
             ? cpu->ram[hi_off]
             : cpu_read8(cpu, bank, hi_addr);
-        uint16 value = (uint16)lo | ((uint16)hi << 8);
-        read_watch_note(bank, addr, value);
-        return cpu_latch_read16(cpu, value);
+        return cpu_latch_read16(cpu, (uint16)lo | ((uint16)hi << 8));
     }
     if (is_hw_reg(bank, addr)) {
         uint8 lo;

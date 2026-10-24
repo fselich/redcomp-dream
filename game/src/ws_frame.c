@@ -20,7 +20,6 @@ enum { kWsRaceMaxExtra = 128, kWsEnvCache = 32 };
 typedef struct {
     const char *name;
     const char *value;
-    int set;
 } WsEnvSlot;
 
 const char *WsEnvStr(const char *name)
@@ -35,7 +34,6 @@ const char *WsEnvStr(const char *name)
     if (used < kWsEnvCache) {
         cache[used].name = name;
         cache[used].value = value;
-        cache[used].set = 1;
         used++;
     }
     return value;
@@ -46,15 +44,6 @@ int WsEnvFlag(const char *name, int def)
     const char *e = WsEnvStr(name);
     if (!e || !*e) return def;
     return strcmp(e, "0") != 0;
-}
-
-int WsEnvInt(const char *name, int def, int lo, int hi)
-{
-    const char *e = WsEnvStr(name);
-    int v = e && *e ? atoi(e) : def;
-    if (v < lo) v = lo;
-    if (v > hi) v = hi;
-    return v;
 }
 
 int WsWideEnabled(void)
@@ -151,15 +140,4 @@ int WsConfigReadStr(const char *path, const char *section, const char *key,
     }
     fclose(f);
     return found;
-}
-
-int WsConfigBool(const char *section, const char *key, int def)
-{
-    char buf[64];
-    int value = def;
-    if (WsConfigReadStr("config.ini", section, key, buf, sizeof(buf)))
-        value = WsParseBool(buf, value);
-    if (WsConfigReadStr("config.local.ini", section, key, buf, sizeof(buf)))
-        value = WsParseBool(buf, value);
-    return value;
 }

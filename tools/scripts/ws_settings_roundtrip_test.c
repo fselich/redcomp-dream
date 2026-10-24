@@ -16,6 +16,15 @@ Config g_config;
 
 const char *WsEnvStr(const char *name) { return getenv(name); }
 
+char *WsTrim(char *s)
+{
+    while (isspace((unsigned char)*s)) s++;
+    char *e = s + strlen(s);
+    while (e > s && isspace((unsigned char)e[-1])) e--;
+    *e = 0;
+    return s;
+}
+
 int WsCiEq(const char *a, const char *b)
 {
     while (*a && *b) {
@@ -81,7 +90,7 @@ int WsConfigReadStr(const char *path, const char *section, const char *key,
     return found;
 }
 
-void WsOwReset(void) {}
+void WsMarginReset(void) {}
 
 static char *ReadAll(const char *path)
 {
@@ -205,6 +214,30 @@ int main(void)
     WsSettingsLoad();
     if (WsSettingBool(WS_SET_WIDESCREEN) != 0) return Fail("widescreen env");
     unsetenv("SNESRECOMP_WS");
+
+    /* Values of removed margin policies are mapped, and a mapped line is not
+     * rewritten when the margin itself is not changed. */
+    if (strcmp(WsSettingValue(WS_SET_MARGIN), "source") != 0)
+        return Fail("ring maps to source");
+    f = fopen("config.ini", "w");
+    fputs("[Widescreen]\nMargin = wrap\nHud = 1\n", f);
+    fclose(f);
+    WsSettingsLoad();
+    if (strcmp(WsSettingValue(WS_SET_MARGIN), "clamp") != 0)
+        return Fail("wrap maps to clamp");
+    if (!WsSettingsSetValue(WS_SET_HUD, "0")) return Fail("set Hud");
+    if (WsSettingsSave() <= 0) return Fail("save Hud");
+    after = ReadAll("config.ini");
+    if (!after) return Fail("read mapped result");
+    if (!strstr(after, "Margin = wrap\nHud = 0\n"))
+        return Fail("mapped Margin line rewritten");
+    free(after);
+    if (!WsSettingCycle(WS_SET_MARGIN, 1) ||
+        strcmp(WsSettingValue(WS_SET_MARGIN), "source") != 0)
+        return Fail("cycle clamp -> source");
+    if (!WsSettingCycle(WS_SET_MARGIN, 1) ||
+        strcmp(WsSettingValue(WS_SET_MARGIN), "clamp") != 0)
+        return Fail("cycle source -> clamp");
 
     printf("ok: settings precedence and writer round trip\n");
     return 0;
