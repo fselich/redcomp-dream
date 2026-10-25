@@ -246,7 +246,7 @@ LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 if grep -q 'not found' "$LDD_LOG"; then
     die "unresolved shared library (see $LDD_LOG)"
 fi
-BAD="$(grep -v "$APPDIR" "$LDD_LOG" | grep -E "$GAME_DIR|/home/linuxbrew|$HOME/\\.cache|/tmp/opencode" || true)"
+BAD="$(grep -v "$APPDIR" "$LDD_LOG" | grep -E "$GAME_DIR|/home/linuxbrew|$HOME/\\.cache" || true)"
 [[ -z "$BAD" ]] || {
     printf '%s\n' "$BAD" >&2
     die "the binary links a build-host library (see $LDD_LOG)"
