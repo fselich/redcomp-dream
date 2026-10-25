@@ -10,7 +10,7 @@
 #   game/tools/validate.sh [--record] [--build DIR] [--case TAG]
 #
 #   --record     run every case twice and write game/tools/validate_refs.txt
-#   --build DIR  directory containing UniracersSNESRecomp (default:
+#   --build DIR  directory containing redcomp-dream (default:
 #                game/build-local) or the executable itself
 #   --case TAG   run only one case (repeatable)
 #
@@ -41,7 +41,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -d "$BUILD" ]; then
-  EXE="$BUILD/UniracersSNESRecomp"
+  EXE="$BUILD/redcomp-dream"
 else
   EXE="$BUILD"
 fi
@@ -159,7 +159,7 @@ run_one() {
 
   rm -rf "$dir"
   mkdir -p "$dir/saves"
-  cp "$EXE" "$dir/UniracersSNESRecomp"
+  cp "$EXE" "$dir/redcomp-dream"
   write_config "$dir"
 
   local frame_ppm="$dir/frame.ppm"
@@ -183,7 +183,7 @@ run_one() {
       SNESRECOMP_SCREENSHOT="$frame_ppm" \
       SNESRECOMP_SCREENSHOT_FRAME=$frame \
       "${envargs[@]}" "${extra[@]}" \
-      ./UniracersSNESRecomp --rom "$ROM" --no-launcher \
+      ./redcomp-dream --rom "$ROM" --no-launcher \
         --script "$ROOT/$route" > "$dir/run.log" 2>&1 )
   echo $? > "$dir/exit"
 }

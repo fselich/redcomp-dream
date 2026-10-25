@@ -62,7 +62,7 @@ exec bash "$IMPL" \
   --runtime-dir mods \
   --build-dir "$BUILD_DIR" \
   --artifact "$PLATFORM" \
-  --exe-name UniracersSNESRecomp \
+  --exe-name redcomp-dream \
   --zip-prefix uniracers \
   --display-name "Uniracers" \
   --rom-hint "$ROM_FILE" \

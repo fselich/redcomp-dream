@@ -161,6 +161,16 @@ if [[ -n "$BRAND" ]]; then
     convert_image "$BRAND" "$ASSETS_DIR/brand_mark.tga" "$BRAND_SIZE" \
         "$([[ "$FILL" -eq 1 ]] && echo fill || echo fit)"
 fi
+
+# The Windows executable icon is generated from the same brand mark. Keep it
+# in resources/ so the build does not need ImageMagick on the player's machine.
+if [[ -n "$BRAND" ]]; then
+    mkdir -p "$GAME_DIR/resources"
+    "$IMAGE_TOOL" "$ASSETS_DIR/brand_mark.tga" -background none -gravity center \
+        -resize 256x256 -define icon:auto-resize=256,128,64,48,32,16 \
+        "$GAME_DIR/resources/redcomp-dream.ico"
+    printf '  icon     %s\n' "$GAME_DIR/resources/redcomp-dream.ico"
+fi
 if [[ -n "$PAD" ]]; then
     convert_image "$PAD" "$ASSETS_DIR/pad.tga" "$PAD_SIZE" \
         "$([[ "$FILL" -eq 1 ]] && echo fill || echo fit)"

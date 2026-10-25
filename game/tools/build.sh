@@ -5,7 +5,7 @@
 #   game/tools/build.sh [linux|windows|both] [options]
 #
 #   linux       native build, default (game/build-local)
-#   windows     cross-build to UniracersSNESRecomp.exe (game/build-windows)
+#   windows     cross-build to redcomp-dream.exe (game/build-windows)
 #   both        both of the above
 #
 # Options:
@@ -114,7 +114,7 @@ build_one() {
 
 build_linux() {
     build_one "$LINUX_DIR" "Linux"
-    local exe="$LINUX_DIR/UniracersSNESRecomp"
+    local exe="$LINUX_DIR/redcomp-dream"
     [[ -x "$exe" ]] || die "Linux build did not produce $exe"
     printf '\nLinux: %s\n' "$exe"
     printf 'Run:   ./run.sh\n'
@@ -233,7 +233,7 @@ build_windows() {
         "-DCMAKE_TOOLCHAIN_FILE=$toolchain_file" \
         -DSNESRECOMP_STATIC_RUNTIME=ON \
         -DSNESRECOMP_SDL3_FETCH=ON
-    local exe="$WINDOWS_DIR/UniracersSNESRecomp.exe"
+    local exe="$WINDOWS_DIR/redcomp-dream.exe"
     [[ -f "$exe" ]] || die "Windows build did not produce $exe"
     printf '\nWindows: %s\n' "$exe"
     printf 'Copy the .exe with its assets/ (and mods/) directory to Windows.\n'

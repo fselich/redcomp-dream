@@ -1,0 +1,4 @@
+/* Windows executable icon. Configured by game/CMakeLists.txt from
+ * game/resources/redcomp-dream.ico, which tools/launcher-art.sh regenerates
+ * from launcher_assets/brand_mark.tga. */
+1 ICON "@REDCOMP_ICON@"

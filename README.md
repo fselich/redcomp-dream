@@ -44,12 +44,21 @@ Create a ready-to-copy Windows folder/zip:
 
 ```sh
 game/tools/package-windows.sh --build
-# -> game/dist/uniracers-<version>-windows-x64.zip
+# -> game/dist/redcomp-dream-<version>-windows-x64.zip
 ```
 
 It contains the playable `.exe`, `assets/` (the launcher banner/fonts),
 `mods/` when present, a README and the licenses. No ROM, source tree or
 toolchain.
+
+Create a single-file Linux AppImage:
+
+```sh
+game/tools/package-appimage.sh --build --fetch-toolchain
+# -> game/dist/redcomp-dream-<version>-x86_64.AppImage
+```
+
+The AppImage contains the game, launcher and `assets/` inside the image; no asset folder is needed beside it. `config.ini`, `keybinds.ini`, `saves/` and `mods/` are written beside the `.AppImage`, so keep it in a writable folder. It needs Linux x86_64 with glibc 2.35+, OpenGL and FUSE/libfuse2 (or `--appimage-extract-and-run`); `--rom` selects a ROM when no `zenity`/`kdialog` is installed.
 
 ## Run
 

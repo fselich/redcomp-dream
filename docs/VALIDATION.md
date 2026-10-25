@@ -8,10 +8,10 @@ Two automated checks cover the port: the output gate, which compares frames and 
 game/tools/validate.sh            # compare against game/tools/validate_refs.txt
 game/tools/validate.sh --record   # re-record the references (each case runs twice)
 game/tools/validate.sh --case logs --case 16x9   # run only some cases
-game/tools/validate.sh --build /path/to/UniracersSNESRecomp   # another binary
+game/tools/validate.sh --build /path/to/redcomp-dream   # another binary
 ```
 
-It needs the ROM at `rom/Uniracers (USA).sfc` and a built executable (default `game/build-local/UniracersSNESRecomp`).
+It needs the ROM at `rom/Uniracers (USA).sfc` and a built executable (default `game/build-local/redcomp-dream`).
 
 **It never touches your data.** Each case runs a copy of the executable in a scratch directory with an empty `saves/` and a generated `config.ini` (widescreen off in the file, audio off, `DisableFrameDelay = 1`). A fingerprint of `game/build-local/config.ini` and `saves/save.srm` is taken before and after, and a change is reported as a warning. `VALIDATE_KEEP=1` keeps the scratch directory for inspection.
 

@@ -14,7 +14,7 @@
 #   --no-build              package the existing build (default)
 #   -h, --help
 #
-# The generated zip is uniracers-<version>-windows-x64.zip. It intentionally
+# The generated zip is redcomp-dream-<version>-windows-x64.zip. It intentionally
 # does not carry config.ini, saves/, a ROM, src/gen or recomp/funcs.h.
 set -euo pipefail
 
@@ -66,7 +66,7 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
 fi
 
 command -v zip >/dev/null 2>&1 || die "zip not found"
-EXE="$BUILD_DIR/UniracersSNESRecomp.exe"
+EXE="$BUILD_DIR/redcomp-dream.exe"
 [[ -f "$EXE" ]] || die "missing $EXE (run with --build, or tools/build.sh windows)"
 if command -v file >/dev/null 2>&1; then
     file "$EXE" | grep -q 'PE32+' || die "$EXE is not a PE32+ executable"
@@ -74,13 +74,13 @@ fi
 [[ -d "$BUILD_DIR/assets/fonts" ]] \
     || die "missing $BUILD_DIR/assets/fonts; rebuild so recomp-ui stages its assets"
 
-NAME="uniracers-${VERSION}-windows-x64"
+NAME="redcomp-dream-${VERSION}-windows-x64"
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/uniracers-win.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 DEST="$STAGE/$NAME"
 mkdir -p "$DEST/licenses"
 
-cp "$EXE" "$DEST/UniracersSNESRecomp.exe"
+cp "$EXE" "$DEST/redcomp-dream.exe"
 cp -a "$BUILD_DIR/assets" "$DEST/assets"
 if [[ -d "$BUILD_DIR/mods" ]]; then
     cp -a "$BUILD_DIR/mods" "$DEST/mods"
@@ -96,7 +96,7 @@ printf '%s\n' "$VERSION" > "$DEST/VERSION"
 {
     printf 'Uniracers recomp %s - Windows x64\n\n' "$VERSION"
     printf 'You must legally own a copy of Uniracers (USA). No ROM is included.\n\n'
-    printf 'Run UniracersSNESRecomp.exe. The launcher asks for your ROM on first\n'
+    printf 'Run redcomp-dream.exe. The launcher asks for your ROM on first\n'
     printf 'run (Browse For ROM) and verifies its SHA-256/CRC32. Keep the assets/\n'
     printf 'folder beside the executable: it holds the launcher fonts and art.\n\n'
     printf 'In a race, F10 or Select+L opens the in-game options menu.\n'
@@ -126,4 +126,4 @@ fi
 
 printf '\nPackaged: %s\n' "$ZIP"
 printf 'Size:     %s\n' "$(du -h "$ZIP" | cut -f1)"
-printf 'Contents: UniracersSNESRecomp.exe, assets/, mods/ (if present), README.txt, licenses/\n'
+printf 'Contents: redcomp-dream.exe, assets/, mods/ (if present), README.txt, licenses/\n'

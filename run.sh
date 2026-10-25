@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROM="$ROOT/rom/Uniracers (USA).sfc"
 BUILD="$ROOT/game/build-local"
-BIN="$BUILD/UniracersSNESRecomp"
+BIN="$BUILD/redcomp-dream"
 
 if [[ ! -f "$ROM" ]]; then
     echo "ROM not found: $ROM" >&2

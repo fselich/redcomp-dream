@@ -30,7 +30,7 @@ cmake --build build-local --parallel
 
 `regen.sh` verifies the ROM, generates `src/gen/*.c` and re-syncs `recomp/funcs.h`. Run it again after any change under `recomp/`. Without `--rom` it tries `SNESRECOMP_ROM`, a ROM at the repository root, then the path in `rom.cfg`. Other flags: `--no-verify`, `--cfg-roots`, `--profile-manifest` (see `bash tools/regen.sh --help`).
 
-The executable is `build-local/UniracersSNESRecomp`. It opens the shared recomp-ui launcher at boot: with no ROM argument it looks beside the executable and in `rom.cfg`, then asks for one in the launcher. The root `run.sh` passes the ROM and `--no-launcher` for the development path; `./run.sh --launcher` opens the GUI. The in-game F10 menu is separate and unchanged: the launcher handles the generic host settings and the port's options stay in F10.
+The executable is `build-local/redcomp-dream`. It opens the shared recomp-ui launcher at boot: with no ROM argument it looks beside the executable and in `rom.cfg`, then asks for one in the launcher. The root `run.sh` passes the ROM and `--no-launcher` for the development path; `./run.sh --launcher` opens the GUI. The in-game F10 menu is separate and unchanged: the launcher handles the generic host settings and the port's options stay in F10.
 
 ### Build helper
 
@@ -38,7 +38,7 @@ The executable is `build-local/UniracersSNESRecomp`. It opens the shared recomp-
 
 ```sh
 tools/build.sh                              # Linux -> build-local
-tools/build.sh windows --fetch-toolchain    # UniracersSNESRecomp.exe -> build-windows
+tools/build.sh windows --fetch-toolchain    # redcomp-dream.exe -> build-windows
 tools/build.sh both --fetch-toolchain       # both
 ```
 
@@ -59,12 +59,21 @@ tools/package-windows.sh              # package the existing build-windows
 tools/package-windows.sh --build      # build first, then package
 ```
 
-It writes `dist/uniracers-<version>-windows-x64.zip` with
-`UniracersSNESRecomp.exe`, the `assets/` folder (fonts, box art, brand, pad),
+It writes `dist/redcomp-dream-<version>-windows-x64.zip` with
+`redcomp-dream.exe`, the `assets/` folder (fonts, box art, brand, pad),
 `mods/` when present, `README.txt` and the licenses. It carries no source
 tree, generated C, ROM or toolchain. Run `tools/launcher-art.sh` before
 packaging if you changed the banner or brand; the zip copies whatever is
 staged in `build-windows/assets/`.
+
+### Linux AppImage
+
+```sh
+tools/package-appimage.sh --build --fetch-toolchain
+# -> dist/redcomp-dream-<version>-x86_64.AppImage
+```
+
+The AppImage bundles the game, the launcher and `assets/` inside the image (`usr/bin/assets`), so no asset folder is needed beside it. `config.ini`, `keybinds.ini`, `rom.cfg`, `saves/` and `mods/` are written beside the `.AppImage`; keep it in a writable folder. It needs Linux x86_64 with glibc 2.35+, a working OpenGL driver and FUSE/libfuse2 (or `--appimage-extract-and-run`). `--rom PATH` selects a ROM when `zenity`/`kdialog` are not installed. The build uses the retcomm Linux `cmake-clang-v1` pack, not the host Homebrew libraries. Mods are not embedded; the launcher creates/uses `mods/` beside the image.
 
 ## Layout
 
@@ -76,9 +85,11 @@ staged in `build-windows/assets/`.
 | `tools/regen.sh` | ROM → C pipeline |
 | `tools/build.sh` | Linux / Windows (.exe) / both build helper |
 | `tools/package-windows.sh` | playable Windows zip: exe + assets + mods + licenses |
+| `tools/package-appimage.sh` | playable Linux AppImage: binary + embedded launcher assets |
 | `tools/validate.sh`, `tools/validate_refs.txt`, `tools/route-validate-dragster.txt` | the output gate (see `docs/VALIDATION.md`) |
 | `tools/launcher-art.sh` | convert box art / brand / pad images to the launcher TGAs and rebuild |
 | `launcher_assets/` | optional launcher art (`boxart.tga`, `brand_mark.tga`, `pad.tga`) |
+| `resources/` | Windows icon (`redcomp-dream.ico`) and its `.rc` template |
 | `scripts/package_release.sh` | builds the player-facing zip |
 | `mods/preloaded/` | place for reviewed, default-disabled mod packages shipped with a release (empty) |
 | `snesrecomp/` | the framework, vendored, with `patches-snesrecomp-local.diff` applied |
@@ -101,7 +112,9 @@ tools/launcher-art.sh --clear
 and `--pad` the controller image. `--key-black` removes a black backdrop (the
 usual case for a logo), `--trim` crops the transparent border, and `--fill`
 crops to fill the slot instead of fitting it. The output goes to
-`launcher_assets/`; commit it if the release should carry it.
+`launcher_assets/`; commit it if the release should carry it. A brand image
+also regenerates `resources/redcomp-dream.ico`, which is embedded in the
+Windows executable.
 
 ## Working rules
 
