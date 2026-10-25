@@ -23,6 +23,28 @@ Prebuilt packages are on the [releases page](https://github.com/fselich/redcomp-
 
 Both packages include the launcher, `assets/` and the licenses. **No ROM is included**: you must legally own a copy of Uniracers (USA). The AppImage needs Linux x86_64, glibc 2.35+, OpenGL and FUSE/libfuse2 (or `--appimage-extract-and-run`); the Windows build is a portable folder with `redcomp-dream.exe`. Each release also publishes `.sha256` files.
 
+## Documentation
+
+The complete documentation starts at [`docs/README.md`](docs/README.md). It is
+exhaustive: every feature was developed as an OpenSpec change, and the
+proposal, design, measured evidence and report of each one are kept in
+[`openspec/`](openspec/).
+
+| Document | Contents |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | repository layout, the port modules, the frame sequence and the framework patch |
+| [`docs/WIDESCREEN.md`](docs/WIDESCREEN.md) | how the wide race picture is built: width, track margins, HUD, riders and radar |
+| [`docs/TWO_PLAYER.md`](docs/TWO_PLAYER.md) | 2P/VS split screen and per-viewport rendering |
+| [`docs/CONFIG.md`](docs/CONFIG.md) | every option, precedence, the in-game menu and the debug variables |
+| [`docs/VALIDATION.md`](docs/VALIDATION.md) | the output gate and how a change is checked |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | open work and planned features |
+| [`docs/formats/`](docs/formats/) | the track, BG1 and save-data formats |
+| [`openspec/specs/`](openspec/specs/) | the current requirements per capability |
+
+The archived changes in [`openspec/changes/archive/`](openspec/changes/archive/)
+hold the development history: proposal, design, tasks and the measured report
+for each feature.
+
 ## Build
 
 You need `git`, CMake 3.20+, a C/C++ toolchain, Python 3 and OpenGL
