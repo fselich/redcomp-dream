@@ -58,11 +58,11 @@ playable binary; a release setup pack uses the same flow.
 **F10** or **Select + L** opens the menu in a race, in the game's menus or on the title screen; the game freezes while it is open. It is not available in netplay. This is the only in-game menu: the pre-boot launcher above is not opened from a running game.
 
 - Up/down (arrows or d-pad) move between rows; left/right (or `<`/`>`) change the value and apply it at once. Held directions repeat.
-- A/Enter activates *GUARDAR EN CONFIG.INI* (save) or *CERRAR* (close). B, Escape or F10 close.
+- A/Enter activates *SAVE TO CONFIG.INI* (save) or *CLOSE* (close). B, Escape or F10 close.
 - Closing keeps the changes for the session; a mark shows while they differ from `config.ini`.
 - Saving updates `config.ini` in place: existing lines keep their position and comments, missing keys are added to their section, a missing section is created at the end. The file is written to a temporary copy first.
 
-The labels are uppercase Spanish ASCII, drawn with the host's 8×8 font. F10 used to load save-state slot 10; that slot stays reachable from the F11 save-state browser or by rebinding `Load`.
+The labels are uppercase English ASCII, drawn with the host's 8×8 font. F10 used to load save-state slot 10; that slot stays reachable from the F11 save-state browser or by rebinding `Load`.
 
 ## Debug variables
 

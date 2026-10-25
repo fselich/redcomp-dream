@@ -80,17 +80,17 @@ static void Text(int x, int y, const char *s, uint32_t color, int scale)
 static const char *RowHelp(WsSettingId id)
 {
     switch (id) {
-    case WS_SET_WIDESCREEN: return "ACTIVA EL CAMPO ANCHO DE CARRERA";
-    case WS_SET_ASPECT: return "PROPORCION DEL CAMPO: AUTO SIGUE LA VENTANA";
-    case WS_SET_MAX_WIDTH: return "ANCHO MAXIMO DEL CAMPO EN PIXELES";
-    case WS_SET_MARGIN: return "COMO SE RELLENAN LOS MARGENES DE PISTA";
-    case WS_SET_HUD: return "VUELTAS Y TIEMPO EN LAS ESQUINAS DEL CUADRO";
-    case WS_SET_CULL: return "LOS PILOTOS SIGUEN VISIBLES EN LOS MARGENES";
-    case WS_SET_FULLSCREEN: return "MODO DE VENTANA; SE APLICA AL INSTANTE";
-    case WS_SET_PIXEL_ASPECT: return "FORMA DE LOS PIXELES SNES, NO DEL CAMPO";
-    case WS_SET_VOLUME: return "VOLUMEN DEL AUDIO, EN PORCENTAJE";
-    case WS_SET_MINIMAP: return "RADAR LOCAL EN LA ESQUINA INFERIOR";
-    case WS_SET_UNLOCK_TOURS: return "DESBLOQUEA LOS NUEVE TOURS";
+    case WS_SET_WIDESCREEN: return "WIDENS THE RACE FIELD";
+    case WS_SET_ASPECT: return "FIELD ASPECT: AUTO FOLLOWS THE WINDOW";
+    case WS_SET_MAX_WIDTH: return "MAXIMUM FIELD WIDTH IN PIXELS";
+    case WS_SET_MARGIN: return "HOW THE TRACK MARGINS ARE FILLED";
+    case WS_SET_HUD: return "LAP AND TIME IN THE FRAME CORNERS";
+    case WS_SET_CULL: return "RIDERS STAY VISIBLE IN THE MARGINS";
+    case WS_SET_FULLSCREEN: return "WINDOW MODE; APPLIED IMMEDIATELY";
+    case WS_SET_PIXEL_ASPECT: return "SNES PIXEL SHAPE, NOT THE FIELD";
+    case WS_SET_VOLUME: return "AUDIO VOLUME, IN PERCENT";
+    case WS_SET_MINIMAP: return "LOCAL RADAR IN THE BOTTOM CORNER";
+    case WS_SET_UNLOCK_TOURS: return "UNLOCKS ALL NINE TOURS";
     default: return "";
     }
 }
@@ -107,9 +107,9 @@ static void DrawPanel(void)
 
     for (int i = 0; i < WS_MENU_PANEL_W * WS_MENU_PANEL_H; i++) s_panel[i] = bg;
     Fill(0, 0, WS_MENU_PANEL_W, 40, header);
-    Text(20, 12, "OPCIONES", accent, 2);
+    Text(20, 12, "OPTIONS", accent, 2);
     Text(360, 16, "F10/SELECT+L", dim, 1);
-    if (s_dirty) Text(400, 28, "* SIN GUARDAR", accent, 1);
+    if (s_dirty) Text(400, 28, "* UNSAVED", accent, 1);
 
     for (int row = 0; row < WS_MENU_ROWS; row++) {
         const int y = WS_MENU_ROW_Y + row * WS_MENU_ROW_H;
@@ -138,10 +138,10 @@ static void DrawPanel(void)
                 Text(464, y + 10, mark, 0xFFFF6B6Bu, 1);
             }
         } else if (row == WS_MENU_SAVE) {
-            TextRow(WS_MENU_LABEL_X, y + 8, "GUARDAR EN CONFIG.INI",
+            TextRow(WS_MENU_LABEL_X, y + 8, "SAVE TO CONFIG.INI",
                     selected ? accent : fg);
         } else {
-            TextRow(WS_MENU_LABEL_X, y + 8, "CERRAR",
+            TextRow(WS_MENU_LABEL_X, y + 8, "CLOSE",
                     selected ? accent : fg);
         }
     }
@@ -157,25 +157,25 @@ static void DrawPanel(void)
         snprintf(help, sizeof(help), "%s", RowHelp(id));
         if (WsSettingLocked(id)) {
             const char *by = WsSettingLockedBy(id);
-            snprintf(note, sizeof(note), "BLOQUEADO POR %s", by ? by : "ENTORNO");
+            snprintf(note, sizeof(note), "LOCKED BY %s", by ? by : "ENVIRONMENT");
         } else if (d->applies == WS_APPLY_PERMANENT_NOTE) {
             snprintf(note, sizeof(note),
-                     "PERMANENTE PARA LA PARTIDA: APAGARLO NO OCULTA LOS TOURS");
+                     "PERMANENT FOR THIS SAVE; OFF DOES NOT HIDE THE TOURS");
         } else if (d->applies == WS_APPLY_NEXT_RACE) {
-            snprintf(note, sizeof(note), "SE APLICA EN LA PROXIMA CARRERA");
+            snprintf(note, sizeof(note), "APPLIES TO THE NEXT RACE");
         } else if (d->applies == WS_APPLY_RESTART) {
-            snprintf(note, sizeof(note), "REQUIERE REINICIAR LA APLICACION");
+            snprintf(note, sizeof(note), "REQUIRES RESTARTING THE APP");
         }
     } else if (s_selected == WS_MENU_SAVE) {
-        snprintf(help, sizeof(help), "ESCRIBE LAS OPCIONES EN CONFIG.INI");
-        snprintf(note, sizeof(note), "LAS TECLAS DE ENTORNO Y CONFIG.LOCAL.INI NO SE TOCAN");
+        snprintf(help, sizeof(help), "WRITES THE OPTIONS TO CONFIG.INI");
+        snprintf(note, sizeof(note), "ENVIRONMENT AND CONFIG.LOCAL.INI KEYS ARE NOT TOUCHED");
     } else {
         snprintf(help, sizeof(help),
-                 "CIERRA SIN GUARDAR; LOS CAMBIOS QUEDAN EN ESTA SESION");
+                 "CLOSES WITHOUT SAVING; CHANGES STAY FOR THIS SESSION");
     }
     Text(16, 406, help, fg, 1);
     if (note[0]) Text(16, 422, note, accent, 1);
-    Text(16, 437, "F10/ESC CERRAR   FLECHAS CAMBIAR   A/ENTER ACEPTAR",
+    Text(16, 437, "F10/ESC CLOSE   ARROWS CHANGE   A/ENTER ACCEPT",
          dim, 1);
 }
 

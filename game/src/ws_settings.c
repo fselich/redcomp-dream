@@ -29,7 +29,7 @@ static const char *const kMarginValues[] = { "source", "clamp" };
 static const char *const kMarginLabels[] = { "SOURCE", "CLAMP" };
 static const char *const kFullscreenValues[] = { "0", "1", "2" };
 static const char *const kFullscreenLabels[] = {
-    "VENTANA", "COMPLETA", "EXCLUSIVA"
+    "WINDOWED", "BORDERLESS", "EXCLUSIVE"
 };
 static const char *const kPixelValues[] = { "0", "1", "2" };
 static const char *const kPixelLabels[] = { "CRT 4:3", "8:7", "1:1" };
@@ -43,33 +43,33 @@ static const char *const kPixelLabels[] = { "CRT 4:3", "8:7", "1:1" };
       vals, labs, NULL, n, 0, 0, def, applies, host }
 
 static const WsSettingDesc kSettings[WS_SET_COUNT] = {
-    BOOL_DESC(WS_SET_WIDESCREEN, "PANORAMICO", "Graphics", "Widescreen",
+    BOOL_DESC(WS_SET_WIDESCREEN, "WIDESCREEN", "Graphics", "Widescreen",
               "SNESRECOMP_WS", "1", WS_APPLY_LIVE, 1),
-    ENUM_DESC(WS_SET_ASPECT, "PROPORCION", "Widescreen", "Aspect",
+    ENUM_DESC(WS_SET_ASPECT, "ASPECT", "Widescreen", "Aspect",
               "SNESRECOMP_WS_ASPECT", NULL, kAspectValues, kAspectLabels, 4,
               "auto", WS_APPLY_LIVE, 0),
-    { WS_SET_MAX_WIDTH, "ANCHO MAXIMO", "Widescreen", "MaxWidth", NULL, NULL,
+    { WS_SET_MAX_WIDTH, "MAX WIDTH", "Widescreen", "MaxWidth", NULL, NULL,
       WS_KIND_INT, NULL, NULL, kMaxWidthPresets, 3, 342, 512, "512",
       WS_APPLY_LIVE, 0 },
-    ENUM_DESC(WS_SET_MARGIN, "MARGEN PISTA", "Widescreen", "Margin",
+    ENUM_DESC(WS_SET_MARGIN, "TRACK MARGIN", "Widescreen", "Margin",
               "SNESRECOMP_WS_OFFWINDOW", "SNESRECOMP_WS_TRACK_CLAMP",
               kMarginValues, kMarginLabels, 2, "source", WS_APPLY_LIVE, 0),
-    BOOL_DESC(WS_SET_HUD, "HUD EXPANDIDO", "Widescreen", "Hud",
+    BOOL_DESC(WS_SET_HUD, "EXPANDED HUD", "Widescreen", "Hud",
               "SNESRECOMP_WS_HUD", "1", WS_APPLY_LIVE, 0),
-    BOOL_DESC(WS_SET_CULL, "RIVAL EN MARGENES", "Widescreen", "Cull",
+    BOOL_DESC(WS_SET_CULL, "RIVAL IN MARGINS", "Widescreen", "Cull",
               "SNESRECOMP_WS_CULL", "1", WS_APPLY_LIVE, 0),
-    ENUM_DESC(WS_SET_FULLSCREEN, "PANTALLA", "Graphics", "Fullscreen",
+    ENUM_DESC(WS_SET_FULLSCREEN, "FULLSCREEN", "Graphics", "Fullscreen",
               NULL, NULL, kFullscreenValues, kFullscreenLabels, 3, "0",
               WS_APPLY_LIVE, 1),
-    ENUM_DESC(WS_SET_PIXEL_ASPECT, "FORMA PIXEL", "Graphics",
+    ENUM_DESC(WS_SET_PIXEL_ASPECT, "PIXEL ASPECT", "Graphics",
               "DisplayAspect", NULL, NULL, kPixelValues, kPixelLabels, 3, "0",
               WS_APPLY_LIVE, 1),
-    { WS_SET_VOLUME, "VOLUMEN", "Sound", "Volume", NULL, NULL,
+    { WS_SET_VOLUME, "VOLUME", "Sound", "Volume", NULL, NULL,
       WS_KIND_INT, NULL, NULL, kVolumePresets, 11, 0, 100, "100",
       WS_APPLY_LIVE, 1 },
-    BOOL_DESC(WS_SET_MINIMAP, "MINIMAPA", "Video", "MiniMap",
+    BOOL_DESC(WS_SET_MINIMAP, "MINIMAP", "Video", "MiniMap",
               "SNESRECOMP_WS_MINIMAP", "1", WS_APPLY_LIVE, 0),
-    BOOL_DESC(WS_SET_UNLOCK_TOURS, "TODOS LOS TOURS", "Emulation",
+    BOOL_DESC(WS_SET_UNLOCK_TOURS, "UNLOCK ALL TOURS", "Emulation",
               "UnlockAllTours", "SNESRECOMP_UNLOCK_TOURS", "0",
               WS_APPLY_PERMANENT_NOTE, 0),
 };

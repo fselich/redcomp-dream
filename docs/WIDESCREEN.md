@@ -29,7 +29,7 @@ The track layer is filled from the game's own track table, or clamped to 256 px.
 
 ## Expanded HUD (BG3)
 
-`game/src/ws_hud.c`, option `[Widescreen] Hud` (F10 row `HUD EXPANDIDO`):
+`game/src/ws_hud.c`, option `[Widescreen] Hud` (F10 row `EXPANDED HUD`):
 
 - lines 17–31 (RACE label, lap counter, timer) use an elastic band: the left group moves out by `E` and keeps a 4 px inset, the timer group moves right by `E`, both at 1:1 scale;
 - lines 32–223 (prompts, arrows, lap times) keep the native clamp, so they stay where the game put them. Line 31 is the last row of the lap/timer glyphs, which is why the band ends at 32.

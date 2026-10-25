@@ -24,7 +24,7 @@ border indicator can show direction and distance at any edge.
   stay untouched in this first version. The new arrow adds *position*; the
   original keeps its *ahead/behind* reading.
 - **New option, on by default.** `[Widescreen] RivalIndicator = 1` (env
-  `SNESRECOMP_WS_RIVAL`) and a menu row `INDICADOR RIVAL <ON>`.
+  `SNESRECOMP_WS_RIVAL`) and a menu row `RIVAL INDICATOR <ON>`.
 - **Hidden where it does not apply.** No indicator outside a live 1P race, in
   2P split screen, or during netplay.
 - **Presentation only.** Drawn as a `PpuExtraObject`, like the radar: no WRAM,

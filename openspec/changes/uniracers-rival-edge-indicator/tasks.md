@@ -1,7 +1,7 @@
 ## 1. Setting and menu
 
 - [ ] 1.1 Add `RivalIndicator` (`[Widescreen]`, default `1`, env `SNESRECOMP_WS_RIVAL`, class `live`) to `ws_settings.c`/`.h`
-- [ ] 1.2 Add the `INDICADOR RIVAL <ON/OFF>` row to `ws_menu.c` and its footer help
+- [ ] 1.2 Add the `RIVAL INDICATOR <ON/OFF>` row to `ws_menu.c` and its footer help
 - [ ] 1.3 Reduce the menu row height so all twelve settings plus Save/Close fit above the footer
 - [ ] 1.4 Check load/save: the key round-trips through `config.ini`, the menu toggles it live, and a locked env/local value is shown and not written
 

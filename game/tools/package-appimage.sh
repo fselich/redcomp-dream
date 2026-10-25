@@ -138,7 +138,7 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" \
          "$APPDIR/usr/share/applications" \
          "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
-         "$APPDIR/usr/share/doc/uniracers/licenses"
+         "$APPDIR/usr/share/doc/redcomp-dream/licenses"
 
 # ── executable and launcher assets ─────────────────────────────────────────
 cp "$EXE" "$APPDIR/usr/bin/redcomp-dream"
@@ -171,21 +171,21 @@ fi
 [[ -f "$ICON_SRC" ]] || die "icon not found: $ICON_SRC"
 [[ -n "$IMAGE_TOOL" ]] || die "ImageMagick is required for the AppImage icon"
 "$IMAGE_TOOL" "$ICON_SRC" -resize 256x256 -background none -gravity center \
-    -extent 256x256 "$APPDIR/uniracers.png"
-cp "$APPDIR/uniracers.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/uniracers.png"
-ln -sf uniracers.png "$APPDIR/.DirIcon"
+    -extent 256x256 "$APPDIR/redcomp-dream.png"
+cp "$APPDIR/redcomp-dream.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/redcomp-dream.png"
+ln -sf redcomp-dream.png "$APPDIR/.DirIcon"
 
-cat > "$APPDIR/uniracers.desktop" <<'EOF'
+cat > "$APPDIR/redcomp-dream.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=Uniracers
-Comment=Uniracers recomp
+Name=redcomp-dream
+Comment=Uniracers recompilation
 Exec=redcomp-dream
-Icon=uniracers
+Icon=redcomp-dream
 Terminal=false
 Categories=Game;
 EOF
-cp "$APPDIR/uniracers.desktop" "$APPDIR/usr/share/applications/uniracers.desktop"
+cp "$APPDIR/redcomp-dream.desktop" "$APPDIR/usr/share/applications/redcomp-dream.desktop"
 
 cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh
@@ -196,9 +196,9 @@ EOF
 chmod +x "$APPDIR/AppRun"
 
 # ── docs, version and licenses ─────────────────────────────────────────────
-DOC="$APPDIR/usr/share/doc/uniracers"
+DOC="$APPDIR/usr/share/doc/redcomp-dream"
 {
-    printf 'Uniracers recomp %s - Linux x86_64 AppImage\n\n' "$VERSION"
+    printf 'redcomp-dream %s - Linux x86_64 AppImage\n\n' "$VERSION"
     printf 'You must legally own a copy of Uniracers (USA). No ROM is included.\n\n'
     printf 'Run this AppImage. The launcher asks for your ROM on first run\n'
     printf '(Browse For ROM) and verifies its SHA-256/CRC32. The launcher\n'
@@ -237,7 +237,7 @@ cp "$GAME_DIR/recomp-ui/assets/common/img/NOTICE.md" "$DOC/licenses/LAUNCHER_IMA
 
 # ── verification of the AppDir ─────────────────────────────────────────────
 if command -v desktop-file-validate >/dev/null 2>&1; then
-    desktop-file-validate "$APPDIR/uniracers.desktop"
+    desktop-file-validate "$APPDIR/redcomp-dream.desktop"
 fi
 
 LDD_LOG="$BUILD_DIR/ldd.txt"
@@ -288,7 +288,7 @@ if [[ "$DO_TEST" -eq 1 ]]; then
     elif [[ ! -f "$ROM" ]]; then
         printf 'Skipping smoke test: ROM not found at %s\n' "$ROM" >&2
     else
-        SMOKE="$(mktemp -d "${TMPDIR:-/tmp}/uniracers-appimage.XXXXXX")"
+        SMOKE="$(mktemp -d "${TMPDIR:-/tmp}/redcomp-dream-appimage.XXXXXX")"
         trap 'rm -rf "$SMOKE"' EXIT
         cp "$APPIMAGE" "$SMOKE/"
         BASE="$(basename "$APPIMAGE")"

@@ -163,7 +163,7 @@ RivalIndicator = 1     ; default on
 
 - environment override: `SNESRECOMP_WS_RIVAL`;
 - game-owned key, written by `WsSettingsSave`;
-- menu row `INDICADOR RIVAL <ON>`; the menu row height is reduced so the 12
+- menu row `RIVAL INDICATOR <ON>`; the menu row height is reduced so the 12
   settings plus Save/Close still fit above the footer.
 
 ### D7. Coexistence with the BG3 arrows

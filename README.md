@@ -12,6 +12,17 @@ The port is playable. On top of the original game it adds:
 
 > **You must legally own a copy of the game.** No ROM data is distributed with this project, in the repository or in any release. The recompiled C is generated locally from your own copy and is never committed.
 
+## Download
+
+Prebuilt packages are on the [releases page](https://github.com/fselich/redcomp-dream/releases/latest):
+
+| Platform | Package |
+|---|---|
+| Linux x86_64 | `redcomp-dream-<version>-x86_64.AppImage` |
+| Windows x64 | `redcomp-dream-<version>-windows-x64.zip` |
+
+Both packages include the launcher, `assets/` and the licenses. **No ROM is included**: you must legally own a copy of Uniracers (USA). The AppImage needs Linux x86_64, glibc 2.35+, OpenGL and FUSE/libfuse2 (or `--appimage-extract-and-run`); the Windows build is a portable folder with `redcomp-dream.exe`. Each release also publishes `.sha256` files.
+
 ## Build
 
 You need `git`, CMake 3.20+, a C/C++ toolchain, Python 3 and OpenGL

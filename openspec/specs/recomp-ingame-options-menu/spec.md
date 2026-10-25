@@ -50,7 +50,7 @@ The options menu SHALL open with F10 on the keyboard and with Select+L on the pa
 
 ### Requirement: Rows and values
 
-The menu SHALL list one row per option of the settings model (widescreen, aspect, maximum width, track margin, wide HUD, cull window, fullscreen, pixel aspect, audio volume, minimap, unlock all tours), followed by *Save* and *Close*. Up and down SHALL move between rows; left and right SHALL change the selected option's value through its list or range; A or Enter SHALL activate *Save* or *Close*. Held directions SHALL auto-repeat. Labels SHALL be uppercase ASCII Spanish, drawable by the host's 8×8 font.
+The menu SHALL list one row per option of the settings model (widescreen, aspect, maximum width, track margin, wide HUD, cull window, fullscreen, pixel aspect, audio volume, minimap, unlock all tours), followed by *Save* and *Close*. Up and down SHALL move between rows; left and right SHALL change the selected option's value through its list or range; A or Enter SHALL activate *Save* or *Close*. Held directions SHALL auto-repeat. Labels SHALL be uppercase ASCII English, drawable by the host's 8×8 font.
 
 #### Scenario: Change a value
 
@@ -159,5 +159,5 @@ host-owned setting, F10 SHALL show the new value when it opens.
 #### Scenario: Expanded HUD label
 
 - **WHEN** F10 is open
-- **THEN** the wide-HUD row is labelled `HUD EXPANDIDO`
+- **THEN** the wide-HUD row is labelled `EXPANDED HUD`
 
