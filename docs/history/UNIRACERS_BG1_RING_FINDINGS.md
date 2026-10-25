@@ -243,7 +243,7 @@ edge.
 ## 6. Reproduce
 
 ```sh
-P="<repo>"
+P="$(git rev-parse --show-toplevel)"
 cd "$P/game/build-local"
 rm -f saves/save.srm saves/save.srm.bak
 

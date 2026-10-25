@@ -1,6 +1,6 @@
 ## 1. Setup
 
-- [x] 1.1 Create `work/ws-ghost-xhigh/{patches,logs,frames,scripts}`. Save `src/game_rtl.c` as `patches/game_rtl.c.before`. Work only in the tree `<workshop>/work/ws-native-map-spike/project/UniracersSNESRecomp/`: edit `src/game_rtl.c`, build in `build-local/` (`cmake --build build-local`). Do **not** use `work/ws-offwindow/project` or `work/ws-map-decode/project`; they are stale standalone copies without the `source`/ultrawide code.
+- [x] 1.1 Create `work/ws-ghost-xhigh/{patches,logs,frames,scripts}`. Save `src/game_rtl.c` as `patches/game_rtl.c.before`. Work only in the tree `work/ws-native-map-spike/project/UniracersSNESRecomp/` (relative to the workshop root): edit `src/game_rtl.c`, build in `build-local/` (`cmake --build build-local`). Do **not** use `work/ws-offwindow/project` or `work/ws-map-decode/project`; they are stale standalone copies without the `source`/ultrawide code.
 - [x] 1.2 Reproduce the defect with `work/ws-ghost-offscreen/scripts/run.sh` (Dragster idle route). Confirm frames 1740–1742: slot 99 low byte 2/16/30, high bit 0, true X 258/272/286. Capture `frames/before-1742.png`: phantom left of the player.
 
 ## 2. Implementation

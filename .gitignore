@@ -4,6 +4,15 @@
 *.smc
 *.srm
 
+# Root design sources (banner, box art, logos) stay local; only the
+# processed TGAs in game/launcher_assets/ are committed.
+/*.png
+/*.webp
+
+# Build and test artifacts that a vendored checkout can pick up.
+/game/snesrecomp/recompiler-rs/target/
+/game/snesrecomp/lib/recomp-net/rb_driver_test_*.log
+
 # Local workshop / research captures. Keep the durable docs and tools, not the
 # raw ROM-derived logs, frames, dumps or old project copies.
 /work/
@@ -12,6 +21,7 @@
 /game/build/
 /game/build-*/
 /game/.cache/
+/game/dist/
 /game/saves/
 /game/src/gen/
 /game/recomp/funcs.h

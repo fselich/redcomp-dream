@@ -13,12 +13,8 @@
 # the ones you want to ship; stage_setup_host.sh only copies tracked files.
 #
 # Examples:
-#   game/tools/launcher-art.sh \
-#       --boxart "Logo retro pixel art Redcomp Dream.png" \
-#       --key-black --trim
-#   game/tools/launcher-art.sh \
-#       --brand "Logotipo retro_ Uniciclo y Sueño.png" \
-#       --key-black --trim
+#   game/tools/launcher-art.sh --boxart cover.png --key-black --trim
+#   game/tools/launcher-art.sh --brand mark.png --key-black --trim
 #   game/tools/launcher-art.sh --clear
 set -euo pipefail
 

@@ -24,8 +24,11 @@ set(SNESRECOMP_ROOT "${CMAKE_SOURCE_DIR}/snesrecomp" CACHE PATH
     "Path to the snesrecomp checkout used by this game")
 if(NOT EXISTS "${SNESRECOMP_ROOT}/runner/runner.cmake")
     message(FATAL_ERROR
-        "snesrecomp submodule missing at ${SNESRECOMP_ROOT}.\n"
-        "Run: git submodule update --init --recursive")
+        "snesrecomp framework tree missing at ${SNESRECOMP_ROOT}.\n"
+        "The framework is vendored in this repository (game/snesrecomp), not a "
+        "submodule: restore that directory from the commit you checked out. "
+        "Only game/recomp-ui is a submodule; if it is missing, run: "
+        "git submodule update --init --recursive")
 endif()
 # Mod packages are part of every project, not an option. The launcher's Mods
 # page, the .snesmod loader, the trusted-plugin registry and netplay's mod-set

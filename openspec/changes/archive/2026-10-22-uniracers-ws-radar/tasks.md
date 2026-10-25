@@ -1,6 +1,6 @@
 ## 1. Setup and measurements
 
-- [x] 1.1 Create `work/ws-radar/{logs,frames,metrics,patches,scripts}`. Save the current `src/game_rtl.c` as `patches/game_rtl.c.before`. Work in `<workshop>/work/ws-native-map-spike/project/UniracersSNESRecomp/`, build in `build-local/`.
+- [x] 1.1 Create `work/ws-radar/{logs,frames,metrics,patches,scripts}`. Save the current `src/game_rtl.c` as `patches/game_rtl.c.before`. Work in `work/ws-native-map-spike/project/UniracersSNESRecomp/` (relative to the workshop root), build in `build-local/`.
 - [x] 1.2 Record baselines: native 4:3 `3417f91a…`, source/default 16:9 at Dragster 2500, and a state trace with the radar off. *(`baseline-native-2500.ppm`, `baseline-source-2500.ppm`, `baseline-source.trace`.)*
 - [x] 1.3 Validate the table coordinate formula on the recorded Dragster and Zoom Zoo frames: rider `$0411/$0413`, camera `$0419/$041D`, BG1 unwrapped scroll, `s_src_ax/ay`, `$03ED`. Record the first mismatching frame if any. *(Radar logs start at 1536; player/rival cells and the local track agree on Dragster and Zoom Zoo; Zoom Zoo `$03ED=2`. The cells are often palette fill (`word&0x3ff==0`), which is background in the chosen shape criterion; the dot still sits on the local track.)*
 - [x] 1.4 Confirm `s_src_valid`/anchor timing and whether `WsSrcFrame` runs in the chosen mode; decide the radar visibility window at race start. *(Radar hidden until `s_src_valid>0`; first log frame 1536.)*

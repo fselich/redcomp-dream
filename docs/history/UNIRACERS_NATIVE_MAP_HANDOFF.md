@@ -6,9 +6,9 @@ experiments.
 
 ## 1. Repository state
 
-- Repo: `<repo>` (older docs
-  say `<workspace>/...`; archived research ran from the sibling `unirally`
-  workshop, which is no longer required by the active tooling)
+- Repo: the repository root (`git rev-parse --show-toplevel`); archived research
+  ran from the sibling `unirally` workshop, which is no longer required by the
+  active tooling
 - ROM: `<repo>/rom/Uniracers (USA).sfc`
   - 2,097,152 bytes, CRC32 `383858c7`
   - SHA-256 `859ec99fdc25dd9b239d9085bf656e4f49c93a32faa5bb248da83efd68ebd478`
