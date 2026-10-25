@@ -69,8 +69,8 @@ level data when their world key matches the native ground truth.
 
 ### Requirement: Topology oracle
 
-The change SHALL use the local `maps/` line-art only for track topology and
-visibility decisions.
+The change SHALL use external line-art maps only for track topology and
+visibility decisions; the maps are not distributed with the repository.
 
 #### Scenario: Section classification
 

@@ -54,7 +54,7 @@ data.
 
 #### Scenario: Topology check
 
-- **WHEN** the image is compared with the `maps/` line-art
+- **WHEN** the image is compared with an external line-art map (not distributed)
 - **THEN** the track topology agrees, or the differences are recorded
 
 ### Requirement: Isolation from parallel work

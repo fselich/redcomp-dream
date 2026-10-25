@@ -209,10 +209,18 @@ runs a set of headless races on a copy of the executable (your saves are never t
 | `docs/` | documentation, starting at [`docs/README.md`](docs/README.md) |
 | `openspec/` | requirements (`specs/`) and the history of every change (`changes/archive/`) |
 | `tools/` | development scripts, input routes and research patches ([`tools/README.md`](tools/README.md)) |
-| `maps/` | third-party line-art maps of 15 tracks, used as references when checking track topology; not game data |
 | `rom/` | your own ROM, git-ignored |
 | `run.sh` | launch from the repository root |
 
 ## License
 
-The project's own source is under `game/LICENSE`. The framework carries its own terms in `game/snesrecomp/LICENSE` and `game/snesrecomp/THIRD_PARTY_ATTRIBUTION.md`. Game data is not distributed.
+redcomp-dream is **source-available, not open source**. The project is under
+the [PolyForm Noncommercial License 1.0.0](LICENSE): the port's own source is
+copyright (c) 2026 fselich, and the vendored snesrecomp framework is copyright
+(c) 2026 Matthew Stanley. **Commercial use is not permitted.** The framework's
+own notices are in [`game/snesrecomp/LICENSE`](game/snesrecomp/LICENSE) and
+[`game/snesrecomp/THIRD_PARTY_ATTRIBUTION.md`](game/snesrecomp/THIRD_PARTY_ATTRIBUTION.md).
+Game data is not distributed.
+
+Uniracers is a trademark of Nintendo. This is an unofficial fan project, not
+affiliated with or endorsed by Nintendo.

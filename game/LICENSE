@@ -2,7 +2,8 @@ PolyForm Noncommercial License 1.0.0
 
 <https://polyformproject.org/licenses/noncommercial/1.0.0>
 
-Copyright (c) 2026 Matthew Stanley
+Copyright (c) 2026 fselich (redcomp-dream port)
+Copyright (c) 2026 Matthew Stanley (snesrecomp framework)
 
 ## Acceptance
 
@@ -97,5 +98,6 @@ For the avoidance of doubt, the licensor's intent is to restrict uses where
 profit is derived from this software. Non-profit personal, educational,
 or community use is welcome regardless of organizational context.
 
-For commercial licensing inquiries, contact the licensor, Matthew Stanley,
-at <https://1379.tech>.
+For commercial licensing inquiries about the snesrecomp framework, contact
+Matthew Stanley at <https://1379.tech>. For the redcomp-dream port, open an
+issue at <https://github.com/fselich/redcomp-dream/issues>.

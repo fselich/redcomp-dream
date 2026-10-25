@@ -124,4 +124,7 @@ Windows executable.
 
 ## License
 
-This project's own source is under `LICENSE`. The framework carries its own terms in `snesrecomp/LICENSE` and `snesrecomp/THIRD_PARTY_ATTRIBUTION.md`. Neither covers the game data, which is not distributed.
+The project's own source is under `LICENSE` (PolyForm Noncommercial 1.0.0,
+copyright fselich). The framework carries its own terms in `snesrecomp/LICENSE`
+and `snesrecomp/THIRD_PARTY_ATTRIBUTION.md`. Commercial use is not permitted.
+Neither license covers the game data, which is not distributed.

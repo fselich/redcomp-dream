@@ -29,7 +29,7 @@ ROOT = Path(os.path.normpath(Path(__file__).absolute())).parents[3]
 def norm(p):
     """Normalise without following symlinks (a vendored tree may be a link)."""
     return Path(os.path.normpath(p))
-TOP = ("README.md", "docs/", "game/", "tools/", "openspec/", "maps/", "work/")
+TOP = ("README.md", "docs/", "game/", "tools/", "openspec/", "work/")
 SKIP_DIRS = ("docs/history/", "openspec/", "game/snesrecomp/",
              "game/build", "game/src/gen/", "work/", "rom/", ".git/")
 # Paths that are created locally by the build or the game, so they never
