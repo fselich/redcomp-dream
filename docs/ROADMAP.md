@@ -20,7 +20,6 @@ Open work, grouped by purpose. Effort is low / medium / high. Unless marked, an 
 | W1 | Rival appears for a moment where it should not (tour 2, track 1) | — | Parked until R3 can capture it; hypotheses in `openspec/changes/archive/2026-10-22-uniracers-ws-ghost-xhigh/report.md`. |
 | W2 | Wider than 512 px (up to the renderer limit, about 800) | medium | Needs the sprite side decided from the WRAM position (`PpuWsSetOamLeftHints`) instead of the 9-bit X; check first how a repeated BG2 (its map is 512 px wide) looks. |
 | W3 | The start countdown can show at 4:3 for a moment | low | Seen during the race-state work; not investigated. |
-| W4 | Two-player split screen | high | Done in OpenSpec change `uniracers-ws-two-player` (pending archive): 2P and VS widen each half as in 1P, with per-viewport BG1, HUD and rider OAM; radar excluded. Side-by-side composition remains a separate future change. |
 | W5 | Menu-to-race transition | low/medium | The frame jumps from 256 to 342+ px on race entry: animate the width, or keep the width in menus with a decorative border. |
 | W6 | Asymmetric margin toward the direction of travel | medium | Shift the wide crop so more pixels lie ahead, with a smooth transition on direction changes; the game camera is untouched. Must be switchable (motion sickness). |
 
@@ -64,4 +63,4 @@ Open work, grouped by purpose. Effort is low / medium / high. Unless marked, an 
 1. R1 + R2: validate every track at several widths without touching the player's save.
 2. R3 + R4 + R5: make rare bugs such as W1 reproducible.
 3. G1 (in progress), then G2, G3 and W6.
-4. The large items: W2, W4, P3.
+4. The large items: W2, P3.

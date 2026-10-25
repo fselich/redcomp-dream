@@ -3,7 +3,7 @@
 ## Current state
 
 - The port boots and plays Uniracers (USA) as a static recompilation on snesrecomp, with the framework's save states, rewind, audio and controllers. Netplay is not built into this project.
-- In a live race the picture is widened from 16:9 up to 512 px, in 1P and in 2P/VS split screen. The track margins are filled from the game's own unpacked track table (`source`), with a native-width fallback (`clamp`); the HUD is spread to the corners; riders stay visible and correct in the margins. Each half of a split-screen race is widened individually, with its own camera, BG1 map and anchor. A small radar sits in the bottom-right corner in 1P only.
+- In a live race the picture is widened from 16:9 to ultrawide (21:9, 32:9 or any decimal aspect, rendered up to the 512 px cap), in 1P and in 2P/VS split screen. The track margins are filled from the game's own unpacked track table (`source`), with a native-width fallback (`clamp`); the HUD is spread to the corners; riders stay visible and correct in the margins. Each half of a split-screen race is widened individually, with its own camera, BG1 map and anchor. A small radar sits in the bottom-right corner in 1P only and can be turned off from the in-game menu.
 - An in-game menu (F10 or Select+L) changes every option live and saves it to `config.ini`.
 - An opt-in option unlocks all nine tours in the save.
 - Automated checks cover the tour-1 1P cases, the 2P/VS width matrix and the Hopper PICK TRACK/race-start cases; the other later tours are not part of the matrix yet (see [`ROADMAP.md`](ROADMAP.md), R1).

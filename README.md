@@ -4,8 +4,8 @@ A native recompilation of **Uniracers** (USA) for desktop, built on [snesrecomp]
 
 The port is playable. On top of the original game it adds:
 
-- **widescreen races** from 16:9 up to 512 px wide, in 1P and in 2P/VS split screen, with the extra track drawn from the game's own track data, the HUD spread to the corners and riders kept correct in the margins;
-- a small **radar** in the bottom-right corner with your position and the rival's;
+- **widescreen races from 16:9 to ultrawide** — 21:9, 32:9 or any decimal aspect, rendered up to the 512 px cap — in 1P and in 2P/VS split screen, with the extra track drawn from the game's own track data, the HUD spread to the corners and riders kept correct in the margins;
+- a small **radar** in the bottom-right corner with your position and the rival's, which can be turned off from the in-game menu;
 - an **in-game options menu** (F10 or Select+L) that applies every option live and saves it;
 - an opt-in **unlock of all nine tours**;
 - save states, rewind, audio and controllers from the framework (netplay is not built into this project).
@@ -13,6 +13,10 @@ The port is playable. On top of the original game it adds:
 > **You must legally own a copy of the game.** No ROM data is distributed with this project, in the repository or in any release. The recompiled C is generated locally from your own copy and is never committed.
 
 ## Build
+
+You need `git`, CMake 3.20+, a C/C++ toolchain, Python 3 and OpenGL
+development headers. SDL3 is downloaded and built automatically when no system
+package is found.
 
 Put your ROM at `rom/Uniracers (USA).sfc` (the folder is git-ignored), check
 out the launcher submodule, then:
@@ -77,7 +81,10 @@ options menu: the launcher owns the generic host settings, F10 owns the port's
 widescreen, margin, HUD, radar and unlock options. If you tick *Skip launcher
 on boot*, `./run.sh --launcher` brings it back.
 
-The executable keeps `config.ini`, `keybinds.ini` and `saves/` in `game/build-local/`. Extra arguments are passed to the game; use absolute paths, because the script starts the game from `game/build-local/`:
+When launched with `./run.sh`, the executable keeps its runtime files
+(`config.ini`, `keybinds.ini`, `saves/`, `mods/` and `rom.cfg`) in
+`game/build-local/`. Extra arguments are passed to the game; use absolute
+paths, because the script starts the game from `game/build-local/`:
 
 ```sh
 ./run.sh --script "$PWD/tools/scripts/ws-native-map-spike/route-dragster-move.txt"
@@ -105,7 +112,7 @@ MiniMap = 1          ; the radar
 UnlockAllTours = 0
 ```
 
-Widescreen appears during a live race in 1P and in 2P/VS split screen; the radar remains 1P-only. **`UnlockAllTours` is permanent for that save**: it raises the tour reveal stage in the battery save, which the game stores on exit; turning it off later does not hide the tours again. Keep a copy of `game/build-local/saves/save.srm` if you may want to go back.
+Widescreen appears during a live race in 1P and in 2P/VS split screen; the radar remains 1P-only and can be turned off with `MiniMap = 0` (or the F10 row). **`UnlockAllTours` is permanent for that save**: it raises the tour reveal stage in the battery save, which the game stores on exit; turning it off later does not hide the tours again. Keep a copy of `game/build-local/saves/save.srm` if you may want to go back.
 
 Every option, its environment override, the precedence rules and the debug variables are in [`docs/CONFIG.md`](docs/CONFIG.md).
 
@@ -123,6 +130,40 @@ game/tools/launcher-art.sh --clear
 `--boxart` is the GAME card, `--brand` the small mark next to the title and
 `--pad` the controller image. The generated files live in
 `game/launcher_assets/`; commit them if the release should carry them.
+
+## Roadmap
+
+Status: **✅ done** · **🚧 in progress** · **📋 planned**. Effort, design notes
+and the open reliability work live in [`docs/ROADMAP.md`](docs/ROADMAP.md);
+finished changes are in `openspec/changes/archive/`.
+
+### Done
+
+| Feature | What it does |
+|---|---|
+| **16:9 widescreen** | Races render up to 512 px wide in 1P and 2P/VS split screen, with the extra track drawn from the game's own track data and the HUD spread to the corners. |
+| **Ultrawide** | 21:9, 32:9 or any decimal aspect (e.g. 2.39), rendered up to the 512 px cap, with per-width track fill, margin policy and rider fixes. |
+| **Radar / minimap** | Bottom-right radar with the player's and the rival's position (1P only, toggleable). |
+| **In-game options menu** | F10 or Select+L opens a menu that applies every option live and saves it. |
+| **Unlock all tours** | Opt-in unlock of the nine tours (permanent for that save). |
+| **Pre-boot launcher** | ROM selection, display, audio, controller bindings, saves, mods and *Generate & rebuild*. |
+| **Portable builds** | Single-file Linux AppImage and a self-contained Windows folder/zip. |
+| **2P / VS split screen** | Widescreen applied to each half with per-viewport BG1, HUD and rider OAM. |
+
+### Planned
+
+| Feature | Status | Notes |
+|---|---|---|
+| **Off-screen rival indicator** | 🚧 in progress | Border arrow with a 1–3 dot distance cue in all eight directions; widescreen-aware and presentation-only (`uniracers-rival-edge-indicator`). |
+| **Per-track times and splits** | 📋 planned | Best time, best lap and splits per track, plus a live delta to your best. |
+| **Race ghost** | 📋 planned | Record the best lap's position, pose and sprite each frame and draw it translucent, paired with per-track times. |
+| **Track gallery** | 📋 planned | Shape, index, name and record of all 45 tracks from the decoded table. |
+| **Custom tracks** | 📋 planned | Track editor or randomizer built on the decoded track table; needs the collision data decoded. |
+| **Graphics effects** | 📋 planned | libretro-style GLSL shader presets (sharp-bilinear, light CRT) and, later, per-layer shaders that only affect the track. |
+| **Extended HUD** | 📋 planned | Speed, splits, delta to best and lap position. |
+| **Progress bar for long tracks** | 📋 planned | Start, finish, player and rival strip for the 1024×16 tracks, where the radar says little. |
+| **Quick restart and practice** | 📋 planned | One key restarts from the start line; practice checkpoints without a rival. |
+| **Online 2P and leaderboards** | 📋 planned | Depends on netplay/rollback being validated for this title. |
 
 ## Checking a change
 
