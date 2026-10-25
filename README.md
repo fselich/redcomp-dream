@@ -137,23 +137,16 @@ Status: **✅ done** · **🚧 in progress** · **📋 planned**. Effort, design
 and the open reliability work live in [`docs/ROADMAP.md`](docs/ROADMAP.md);
 finished changes are in `openspec/changes/archive/`.
 
-### Done
-
-| Feature | What it does |
-|---|---|
-| **16:9 widescreen** | Races render up to 512 px wide in 1P and 2P/VS split screen, with the extra track drawn from the game's own track data and the HUD spread to the corners. |
-| **Ultrawide** | 21:9, 32:9 or any decimal aspect (e.g. 2.39), rendered up to the 512 px cap, with per-width track fill, margin policy and rider fixes. |
-| **Radar / minimap** | Bottom-right radar with the player's and the rival's position (1P only, toggleable). |
-| **In-game options menu** | F10 or Select+L opens a menu that applies every option live and saves it. |
-| **Unlock all tours** | Opt-in unlock of the nine tours (permanent for that save). |
-| **Pre-boot launcher** | ROM selection, display, audio, controller bindings, saves, mods and *Generate & rebuild*. |
-| **Portable builds** | Single-file Linux AppImage and a self-contained Windows folder/zip. |
-| **2P / VS split screen** | Widescreen applied to each half with per-viewport BG1, HUD and rider OAM. |
-
-### Planned
-
 | Feature | Status | Notes |
 |---|---|---|
+| **Widescreen 16:9** | ✅ done | Races render up to 512 px wide in 1P and 2P/VS split screen, with the extra track drawn from the game's own track data and the HUD spread to the corners. |
+| **Ultrawide** | ✅ done | 21:9, 32:9 or any decimal aspect (e.g. 2.39), rendered up to the 512 px cap, with per-width track fill, margin policy and rider fixes. |
+| **2P / VS split screen** | ✅ done | Widescreen applied to each half with per-viewport BG1, HUD and rider OAM. |
+| **Radar / minimap** | ✅ done | Bottom-right radar with the player's and the rival's position (1P only, toggleable). |
+| **In-game options menu** | ✅ done | F10 or Select+L opens a menu that applies every option live and saves it. |
+| **Unlock all tours** | ✅ done | Opt-in unlock of the nine tours (permanent for that save). |
+| **Pre-boot launcher** | ✅ done | ROM selection, display, audio, controller bindings, saves, mods and *Generate & rebuild*. |
+| **Portable builds** | ✅ done | Single-file Linux AppImage and a self-contained Windows folder/zip. |
 | **Off-screen rival indicator** | 🚧 in progress | Border arrow with a 1–3 dot distance cue in all eight directions; widescreen-aware and presentation-only (`uniracers-rival-edge-indicator`). |
 | **Per-track times and splits** | 📋 planned | Best time, best lap and splits per track, plus a live delta to your best. |
 | **Race ghost** | 📋 planned | Record the best lap's position, pose and sprite each frame and draw it translucent, paired with per-track times. |
